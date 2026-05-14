@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "autopot",
+  "version": "${version}",
+  "name": "AutoPot",
+  "description": "Smart auto-potting with buff management and auto-refill",
+  "authors": ["You"],
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.autopot.AutoPotMod"]
+  },
+  "mixins": ["autopot.mixins.json"],
+  "depends": {
+    "fabricloader": ">=0.18.0",
+    "fabric": "*",
+    "minecraft": "~1.21.11"
+  }
+}
+
