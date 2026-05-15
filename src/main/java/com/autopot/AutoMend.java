@@ -25,6 +25,7 @@ public class AutoMend {
 
     private record SlotMove(int fromSlotId, int toSlotId, long createdTick, String reason) {}
     private record ArmorState(int slotId, EquipmentSlot eqSlot, double ratio, int remainingRaw, boolean binding, int score) {}
+    private record EmptyArmorSlot(Slot slot, EquipmentSlot eqSlot) {}
 
     private final Deque<SlotMove> moveQueue = new ArrayDeque<>();
     private final Set<Integer> reservedDestinations = new HashSet<>();
@@ -45,6 +46,9 @@ public class AutoMend {
     private boolean debugMode = false;
     private boolean xpOnlyActivation = false;
     private boolean weightedChestplatePriority = true;
+    private int unequipTargetRemainingRaw = 405;
+    private int equalizeGapRaw = 8;
+    private int reEquipToleranceRaw = 2;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -177,60 +181,42 @@ public class AutoMend {
         List<ArmorState> armor = getArmorStates(handler);
         if (armor.isEmpty()) return;
 
-        double diffPercent = armor.stream().mapToDouble(ArmorState::ratio).max().orElse(1.0d)
-                - armor.stream().mapToDouble(ArmorState::ratio).min().orElse(1.0d);
-        diffPercent *= 100.0d;
-
-        boolean lowXp = isLowXp(client);
-        double unequipThreshold = lowXp ? balanceTolerancePercent + 6.0d : balanceTolerancePercent;
-
-        // Runtime fix: if actively mending with XP and all armor slots are filled,
-        // allow a gentle proactive unequip of the healthiest piece even when spread is small.
-        if (isHoldingXpBottle(client) && findEmptyArmorSlot(handler) == null) {
-            Slot destination = findFirstOpenStorageSlot(handler);
-            if (destination != null && allowDirectionChange(true)) {
-                ArmorState healthiest = armor.stream().filter(a -> !a.binding)
-                        .max(Comparator.comparingDouble(this::weightedMetricForUnequip)).orElse(null);
-                if (healthiest != null) {
+        // Raw durability-first logic for 1.21.11 mending behavior.
+        if (isHoldingXpBottle(client) && findEmptyArmorSlotWithType(handler) == null) {
+            int minRaw = armor.stream().mapToInt(ArmorState::remainingRaw).min().orElse(Integer.MAX_VALUE);
+            ArmorState healthiest = armor.stream()
+                    .filter(a -> !a.binding)
+                    .filter(a -> a.remainingRaw >= unequipTargetRemainingRaw)
+                    .filter(a -> (a.remainingRaw - minRaw) >= equalizeGapRaw)
+                    .max(Comparator.comparingInt(ArmorState::remainingRaw))
+                    .orElse(null);
+            if (healthiest != null && allowDirectionChange(true)) {
+                Slot destination = findFirstOpenStorageSlot(handler);
+                if (destination != null) {
                     reservedDestinations.add(destination.id);
-                    moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "xp_mend_proactive"));
+                    moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "unequip_raw_target"));
                     lastDirectionUnequip = true;
                     lastReverseTick = worldTick;
-                    debug("queue proactive mend " + healthiest.slotId + "->" + destination.id);
+                    debug("queued raw-target unequip " + healthiest.slotId + "->" + destination.id + " minRaw=" + minRaw);
                     return;
                 }
             }
         }
 
-        if (diffPercent >= unequipThreshold) {
-            if (!allowDirectionChange(true)) return;
-            Slot destination = findFirstOpenStorageSlot(handler);
-            if (destination == null) return;
-
-            Comparator<ArmorState> cmp = Comparator.comparingDouble(this::weightedMetricForUnequip);
-            ArmorState healthiest = armor.stream().filter(a -> !a.binding).max(cmp).orElse(null);
-            if (healthiest == null) return;
-            if (sameTargetStreak >= 3 && healthiest.slotId == lastActionFrom) return;
-
-            reservedDestinations.add(destination.id);
-            moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "unequip_balance"));
-            lastDirectionUnequip = true;
-            lastReverseTick = worldTick;
-            debug("queued unequip " + healthiest.slotId + "->" + destination.id);
-            return;
-        }
-
-        if (diffPercent <= REEQUIP_DIFF_PERCENT) {
-            if (!allowDirectionChange(false)) return;
-            ArmorState bestStorage = findBestStorageArmor(handler);
-            Slot emptyArmor = findEmptyArmorSlot(handler);
-            if (bestStorage == null || emptyArmor == null) return;
-            if (reservedDestinations.contains(emptyArmor.id)) return;
-
-            moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.id, worldTick, "reequip_stable"));
-            lastDirectionUnequip = false;
-            lastReverseTick = worldTick;
-            debug("queued re-equip " + bestStorage.slotId + "->" + emptyArmor.id);
+        EmptyArmorSlot emptyArmor = findEmptyArmorSlotWithType(handler);
+        if (emptyArmor != null && allowDirectionChange(false)) {
+            ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
+            if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
+                int targetRaw = getTargetRawForSlot(armor, emptyArmor.eqSlot);
+                int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
+                if (!isHoldingXpBottle(client) || diff <= reEquipToleranceRaw) {
+                    moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
+                    lastDirectionUnequip = false;
+                    lastReverseTick = worldTick;
+                    debug("queued equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " targetRaw=" + targetRaw + " diff=" + diff);
+                    return;
+                }
+            }
         }
     }
 
@@ -327,6 +313,29 @@ public class AutoMend {
                 .orElse(null);
     }
 
+    private ArmorState findBestStorageArmorForSlot(ScreenHandler handler, EquipmentSlot eqSlot) {
+        return handler.slots.stream()
+                .filter(this::isStorageInventorySlot)
+                .filter(Slot::hasStack)
+                .map(slot -> {
+                    ItemStack stack = slot.getStack();
+                    EquipmentSlot eq = getEquipmentSlot(stack);
+                    if (eq == null || eq != eqSlot) return null;
+                    return new ArmorState(slot.id, eq, durabilityRatio(stack), getRemainingDurability(stack), hasBindingCurse(stack), stack.getEnchantments().getSize());
+                })
+                .filter(Objects::nonNull)
+                .max(Comparator.comparingInt(ArmorState::remainingRaw))
+                .orElse(null);
+    }
+
+    private int getTargetRawForSlot(List<ArmorState> equippedArmor, EquipmentSlot slot) {
+        return equippedArmor.stream()
+                .filter(a -> a.eqSlot != slot)
+                .mapToInt(ArmorState::remainingRaw)
+                .max()
+                .orElse(0);
+    }
+
     private Slot findFirstOpenStorageSlot(ScreenHandler handler) {
         for (Slot slot : handler.slots) {
             if (!isStorageInventorySlot(slot) || reservedDestinations.contains(slot.id)) continue;
@@ -335,9 +344,11 @@ public class AutoMend {
         return null;
     }
 
-    private Slot findEmptyArmorSlot(ScreenHandler handler) {
+    private EmptyArmorSlot findEmptyArmorSlotWithType(ScreenHandler handler) {
         for (Slot slot : handler.slots) {
-            if (isArmorInventorySlot(slot) && !slot.hasStack()) return slot;
+            if (!isArmorInventorySlot(slot) || slot.hasStack()) continue;
+            EquipmentSlot eq = equipmentSlotFromArmorInventoryIndex(slot.getIndex());
+            if (eq != null) return new EmptyArmorSlot(slot, eq);
         }
         return null;
     }
@@ -366,6 +377,16 @@ public class AutoMend {
         if (!(slot.inventory instanceof PlayerInventory)) return false;
         int idx = slot.getIndex();
         return idx >= 36 && idx <= 39;
+    }
+
+    private EquipmentSlot equipmentSlotFromArmorInventoryIndex(int idx) {
+        return switch (idx) {
+            case 36 -> EquipmentSlot.FEET;
+            case 37 -> EquipmentSlot.LEGS;
+            case 38 -> EquipmentSlot.CHEST;
+            case 39 -> EquipmentSlot.HEAD;
+            default -> null;
+        };
     }
 
     private Slot findArmorSlotByInventoryIndex(ScreenHandler handler, int inventoryIndex) {
@@ -445,6 +466,9 @@ public class AutoMend {
             debugMode = Boolean.parseBoolean(p.getProperty("debugMode", "false"));
             xpOnlyActivation = Boolean.parseBoolean(p.getProperty("xpOnlyActivation", "false"));
             weightedChestplatePriority = Boolean.parseBoolean(p.getProperty("weightedChestplatePriority", "true"));
+            unequipTargetRemainingRaw = Integer.parseInt(p.getProperty("unequipTargetRemainingRaw", "405"));
+            equalizeGapRaw = Integer.parseInt(p.getProperty("equalizeGapRaw", "8"));
+            reEquipToleranceRaw = Integer.parseInt(p.getProperty("reEquipToleranceRaw", "2"));
         } catch (Exception ignored) {}
     }
 
@@ -463,6 +487,9 @@ public class AutoMend {
             p.setProperty("debugMode", Boolean.toString(debugMode));
             p.setProperty("xpOnlyActivation", Boolean.toString(xpOnlyActivation));
             p.setProperty("weightedChestplatePriority", Boolean.toString(weightedChestplatePriority));
+            p.setProperty("unequipTargetRemainingRaw", Integer.toString(unequipTargetRemainingRaw));
+            p.setProperty("equalizeGapRaw", Integer.toString(equalizeGapRaw));
+            p.setProperty("reEquipToleranceRaw", Integer.toString(reEquipToleranceRaw));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
