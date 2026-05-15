@@ -35,7 +35,7 @@ public class AutoMend {
 
     // settings
     private BalanceMode balanceMode = BalanceMode.EQUAL_PERCENT;
-    private double balanceTolerancePercent = 12.0d;
+    private double balanceTolerancePercent = 8.0d;
     private int actionDelayTicksSetting = 3;
     private int delayJitterTicks = 4;
     private int postActionCooldownTicks = 10;
@@ -105,7 +105,12 @@ public class AutoMend {
         if (client.currentScreen != null) { resetQueue(); return; }
         if (pauseWhileMoving && isMoving(client)) return;
         if (pauseNearEnemies && hasNearbyThreat(client)) return;
-        if (xpOnlyActivation && !isHoldingXpBottle(client)) return;
+        boolean holdingXp = isHoldingXpBottle(client);
+        if (xpOnlyActivation && !holdingXp) return;
+
+        if (debugMode && worldTick % 20 == 0 && client.player != null) {
+            client.player.sendMessage(net.minecraft.text.Text.literal("§7[AutoMend] q=" + moveQueue.size() + " pend=" + pendingConfirmTicks + " cd=" + swapCooldownTicks + " d=" + actionDelayTicks + " xp=" + holdingXp), true);
+        }
 
         ScreenHandler handler = client.player.playerScreenHandler;
         if (!(handler instanceof PlayerScreenHandler)) return;
@@ -136,6 +141,24 @@ public class AutoMend {
 
         boolean lowXp = isLowXp(client);
         double unequipThreshold = lowXp ? balanceTolerancePercent + 6.0d : balanceTolerancePercent;
+
+        // Runtime fix: if actively mending with XP and all armor slots are filled,
+        // allow a gentle proactive unequip of the healthiest piece even when spread is small.
+        if (isHoldingXpBottle(client) && findEmptyArmorSlot(handler) == null) {
+            Slot destination = findFirstOpenStorageSlot(handler);
+            if (destination != null && allowDirectionChange(true)) {
+                ArmorState healthiest = armor.stream().filter(a -> !a.binding)
+                        .max(Comparator.comparingDouble(this::weightedMetricForUnequip)).orElse(null);
+                if (healthiest != null) {
+                    reservedDestinations.add(destination.id);
+                    moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "xp_mend_proactive"));
+                    lastDirectionUnequip = true;
+                    lastReverseTick = worldTick;
+                    debug("queue proactive mend " + healthiest.slotId + "->" + destination.id);
+                    return;
+                }
+            }
+        }
 
         if (diffPercent >= unequipThreshold) {
             if (!allowDirectionChange(true)) return;
@@ -179,6 +202,7 @@ public class AutoMend {
         ItemStack source = from.getStack();
         if (safeInventoryMode && (!to.canInsert(source) || source.isEmpty())) { resetQueue(); return; }
 
+        debug("click move " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId);
         click(handler.syncId, move.fromSlotId, client);
         click(handler.syncId, move.toSlotId, client);
 
@@ -208,7 +232,9 @@ public class AutoMend {
             EquipmentSlot eq = getEquipmentSlot(stack);
             if (eq == null) continue;
             int remaining = getRemainingDurability(stack);
-            armor.add(new ArmorState(slot.id, eq, durabilityRatio(stack), remaining, hasBindingCurse(stack), stack.getEnchantments().getSize()));
+            double ratio = durabilityRatio(stack);
+            armor.add(new ArmorState(slot.id, eq, ratio, remaining, hasBindingCurse(stack), stack.getEnchantments().getSize()));
+            debug("armor slotId=" + slot.id + " invIdx=" + slot.getIndex() + " eq=" + eq + " rem=" + remaining + "/" + stack.getMaxDamage() + " ratio=" + String.format(java.util.Locale.ROOT, "%.2f", ratio * 100));
         }
         cachedArmor = armor;
         return armor;
@@ -224,6 +250,7 @@ public class AutoMend {
         if (pendingConfirmTicks > 0) {
             pendingConfirmTicks++;
             if (pendingConfirmTicks > CONFIRM_TIMEOUT) {
+                debug("pending confirm timeout; resetting queue");
                 resetQueue();
                 actionDelayTicks = 2 + random.nextInt(4);
             }
