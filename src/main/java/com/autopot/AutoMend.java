@@ -61,6 +61,8 @@ public class AutoMend {
     private int lastActionFrom = -1;
     private int lastActionTo = -1;
     private long worldTick = 0;
+    private SlotMove inFlightMove = null;
+    private boolean inFlightPickedUp = false;
     private long lastDecisionTick = -100;
     private long lastBalanceCalcTick = -100;
     private long lastReverseTick = -200;
@@ -130,7 +132,7 @@ public class AutoMend {
         if (swapCooldownTicks > 0) { swapCooldownTicks--; return; }
         if (actionDelayTicks > 0) { actionDelayTicks--; return; }
 
-        if (!moveQueue.isEmpty()) {
+        if (inFlightMove != null || !moveQueue.isEmpty()) {
             executeNext(handler, client);
             return;
         }
@@ -239,17 +241,40 @@ public class AutoMend {
     }
 
     private void executeNext(ScreenHandler handler, MinecraftClient client) {
-        SlotMove move = moveQueue.pollFirst();
-        if (move == null) return;
+        if (inFlightMove == null) {
+            inFlightMove = moveQueue.pollFirst();
+            inFlightPickedUp = false;
+            if (inFlightMove == null) return;
+        }
+
+        SlotMove move = inFlightMove;
         Slot from = getSlotById(handler, move.fromSlotId);
         Slot to = getSlotById(handler, move.toSlotId);
 
-        if (from == null || to == null || !from.hasStack()) { resetQueue(); return; }
-        ItemStack source = from.getStack();
-        if (safeInventoryMode && (!to.canInsert(source) || source.isEmpty())) { resetQueue(); return; }
+        if (from == null || to == null) { resetQueue(); return; }
 
-        debug("click move " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId);
-        click(handler.syncId, move.fromSlotId, client);
+        if (!inFlightPickedUp) {
+            if (!from.hasStack()) { inFlightMove = null; return; }
+            ItemStack source = from.getStack();
+            if (safeInventoryMode && (!to.canInsert(source) || source.isEmpty())) { resetQueue(); return; }
+
+            debug("click pickup " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId + " cursor=" + handler.getCursorStack());
+            click(handler.syncId, move.fromSlotId, client);
+            inFlightPickedUp = true;
+            pendingConfirmTicks = 1;
+            actionDelayTicks = 1;
+            return;
+        }
+
+        // second stage: place on a later tick after revision/cursor update
+        if (handler.getCursorStack().isEmpty()) {
+            debug("pickup lost before place; aborting move from=" + move.fromSlotId + " to=" + move.toSlotId);
+            inFlightMove = null;
+            inFlightPickedUp = false;
+            return;
+        }
+
+        debug("click place " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId + " cursor=" + handler.getCursorStack());
         click(handler.syncId, move.toSlotId, client);
 
         if (move.fromSlotId == lastActionFrom || move.toSlotId == lastActionTo) sameTargetStreak++;
@@ -262,6 +287,9 @@ public class AutoMend {
         swapCooldownTicks = postActionCooldownTicks + random.nextInt(5);
         pendingConfirmTicks = 1;
         reservedDestinations.remove(move.toSlotId);
+
+        inFlightMove = null;
+        inFlightPickedUp = false;
     }
 
     private List<ArmorState> getArmorStates(ScreenHandler handler) {
@@ -489,6 +517,8 @@ public class AutoMend {
         reservedDestinations.clear();
         pendingConfirmTicks = 0;
         cacheArmorRevision = -1;
+        inFlightMove = null;
+        inFlightPickedUp = false;
     }
 
     private void resetRuntimeState() {
