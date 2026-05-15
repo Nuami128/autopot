@@ -49,6 +49,8 @@ public class AutoMend {
     private int unequipTargetRemainingRaw = 405;
     private int equalizeGapRaw = 8;
     private int reEquipToleranceRaw = 2;
+    private int phaseTargetRaw = 400;
+    private int lowBottleCountThreshold = 40;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -178,42 +180,58 @@ public class AutoMend {
     }
 
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
-        List<ArmorState> armor = getArmorStates(handler);
-        if (armor.isEmpty()) return;
+        List<ArmorState> equipped = getArmorStates(handler);
+        if (equipped.isEmpty()) return;
 
-        // Raw durability-first logic for 1.21.11 mending behavior.
-        if (isHoldingXpBottle(client) && findEmptyArmorSlotWithType(handler) == null) {
-            int minRaw = armor.stream().mapToInt(ArmorState::remainingRaw).min().orElse(Integer.MAX_VALUE);
-            ArmorState healthiest = armor.stream()
+        int bottleCount = countXpBottles(client);
+        boolean holdingXp = isHoldingXpBottle(client);
+        boolean lowXpPhase = bottleCount <= lowBottleCountThreshold;
+
+        // Phase A: while actively mending, cap pieces at target raw (e.g. 400) by unequipping once they pass target.
+        if (holdingXp && findEmptyArmorSlotWithType(handler) == null) {
+            ArmorState aboveTarget = equipped.stream()
                     .filter(a -> !a.binding)
-                    .filter(a -> a.remainingRaw >= unequipTargetRemainingRaw)
-                    .filter(a -> (a.remainingRaw - minRaw) >= equalizeGapRaw)
+                    .filter(a -> a.remainingRaw >= phaseTargetRaw)
                     .max(Comparator.comparingInt(ArmorState::remainingRaw))
                     .orElse(null);
-            if (healthiest != null && allowDirectionChange(true)) {
+            if (aboveTarget != null && allowDirectionChange(true)) {
                 Slot destination = findFirstOpenStorageSlot(handler);
                 if (destination != null) {
                     reservedDestinations.add(destination.id);
-                    moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "unequip_raw_target"));
+                    moveQueue.addLast(new SlotMove(aboveTarget.slotId, destination.id, worldTick, "unequip_at_target"));
                     lastDirectionUnequip = true;
                     lastReverseTick = worldTick;
-                    debug("queued raw-target unequip " + healthiest.slotId + "->" + destination.id + " minRaw=" + minRaw);
+                    debug("queued target-cap unequip " + aboveTarget.slotId + "->" + destination.id + " target=" + phaseTargetRaw + " bottles=" + bottleCount);
                     return;
                 }
             }
         }
 
+        // Phase B: if we have empty armor slots and we are still in bottle-rich phase,
+        // keep mending by re-equipping below-target pieces first.
         EmptyArmorSlot emptyArmor = findEmptyArmorSlotWithType(handler);
+        if (emptyArmor != null && allowDirectionChange(false) && !lowXpPhase) {
+            ArmorState candidate = findStorageArmorForSlotUnderTarget(handler, emptyArmor.eqSlot, phaseTargetRaw);
+            if (candidate != null) {
+                moveQueue.addLast(new SlotMove(candidate.slotId, emptyArmor.slot.id, worldTick, "reequip_under_target"));
+                lastDirectionUnequip = false;
+                lastReverseTick = worldTick;
+                debug("queued under-target re-equip " + candidate.slotId + "->" + emptyArmor.slot.id + " rem=" + candidate.remainingRaw);
+                return;
+            }
+        }
+
+        // Phase C (final mend with low bottles): equalize to the highest common raw value.
         if (emptyArmor != null && allowDirectionChange(false)) {
             ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
             if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
-                int targetRaw = getTargetRawForSlot(armor, emptyArmor.eqSlot);
+                int targetRaw = getEqualizeTargetRaw(handler, equipped, emptyArmor.eqSlot);
                 int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
-                if (!isHoldingXpBottle(client) || diff <= reEquipToleranceRaw) {
+                if (diff <= reEquipToleranceRaw || !holdingXp) {
                     moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
                     lastDirectionUnequip = false;
                     lastReverseTick = worldTick;
-                    debug("queued equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " targetRaw=" + targetRaw + " diff=" + diff);
+                    debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount);
                     return;
                 }
             }
@@ -334,6 +352,40 @@ public class AutoMend {
                 .mapToInt(ArmorState::remainingRaw)
                 .max()
                 .orElse(0);
+    }
+
+    private ArmorState findStorageArmorForSlotUnderTarget(ScreenHandler handler, EquipmentSlot eqSlot, int targetRaw) {
+        return handler.slots.stream()
+                .filter(this::isStorageInventorySlot)
+                .filter(Slot::hasStack)
+                .map(slot -> {
+                    ItemStack stack = slot.getStack();
+                    EquipmentSlot eq = getEquipmentSlot(stack);
+                    if (eq == null || eq != eqSlot) return null;
+                    ArmorState st = new ArmorState(slot.id, eq, durabilityRatio(stack), getRemainingDurability(stack), hasBindingCurse(stack), stack.getEnchantments().getSize());
+                    return st.remainingRaw < targetRaw ? st : null;
+                })
+                .filter(Objects::nonNull)
+                .min(Comparator.comparingInt(ArmorState::remainingRaw))
+                .orElse(null);
+    }
+
+    private int getEqualizeTargetRaw(ScreenHandler handler, List<ArmorState> equippedArmor, EquipmentSlot missingSlot) {
+        List<Integer> values = new ArrayList<>();
+        for (ArmorState a : equippedArmor) values.add(a.remainingRaw);
+        ArmorState storageCandidate = findBestStorageArmorForSlot(handler, missingSlot);
+        if (storageCandidate != null) values.add(storageCandidate.remainingRaw);
+        return values.stream().min(Integer::compareTo).orElse(0);
+    }
+
+    private int countXpBottles(MinecraftClient client) {
+        int total = 0;
+        PlayerInventory inv = client.player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isOf(net.minecraft.item.Items.EXPERIENCE_BOTTLE)) total += stack.getCount();
+        }
+        return total;
     }
 
     private Slot findFirstOpenStorageSlot(ScreenHandler handler) {
@@ -469,6 +521,8 @@ public class AutoMend {
             unequipTargetRemainingRaw = Integer.parseInt(p.getProperty("unequipTargetRemainingRaw", "405"));
             equalizeGapRaw = Integer.parseInt(p.getProperty("equalizeGapRaw", "8"));
             reEquipToleranceRaw = Integer.parseInt(p.getProperty("reEquipToleranceRaw", "2"));
+            phaseTargetRaw = Integer.parseInt(p.getProperty("phaseTargetRaw", "400"));
+            lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
         } catch (Exception ignored) {}
     }
 
@@ -490,6 +544,8 @@ public class AutoMend {
             p.setProperty("unequipTargetRemainingRaw", Integer.toString(unequipTargetRemainingRaw));
             p.setProperty("equalizeGapRaw", Integer.toString(equalizeGapRaw));
             p.setProperty("reEquipToleranceRaw", Integer.toString(reEquipToleranceRaw));
+            p.setProperty("phaseTargetRaw", Integer.toString(phaseTargetRaw));
+            p.setProperty("lowBottleCountThreshold", Integer.toString(lowBottleCountThreshold));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
