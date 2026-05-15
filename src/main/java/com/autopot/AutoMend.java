@@ -25,6 +25,7 @@ public class AutoMend {
 
     private record SlotMove(int fromSlotId, int toSlotId, long createdTick, String reason) {}
     private record ArmorState(int slotId, EquipmentSlot eqSlot, double ratio, int remainingRaw, boolean binding, int score) {}
+    private record EmptyArmorSlot(Slot slot, EquipmentSlot eqSlot) {}
 
     private final Deque<SlotMove> moveQueue = new ArrayDeque<>();
     private final Set<Integer> reservedDestinations = new HashSet<>();
@@ -45,6 +46,11 @@ public class AutoMend {
     private boolean debugMode = false;
     private boolean xpOnlyActivation = false;
     private boolean weightedChestplatePriority = true;
+    private int unequipTargetRemainingRaw = 405;
+    private int equalizeGapRaw = 8;
+    private int reEquipToleranceRaw = 2;
+    private int phaseTargetRaw = 400;
+    private int lowBottleCountThreshold = 40;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -55,6 +61,8 @@ public class AutoMend {
     private int lastActionFrom = -1;
     private int lastActionTo = -1;
     private long worldTick = 0;
+    private SlotMove inFlightMove = null;
+    private boolean inFlightPickedUp = false;
     private long lastDecisionTick = -100;
     private long lastBalanceCalcTick = -100;
     private long lastReverseTick = -200;
@@ -67,8 +75,10 @@ public class AutoMend {
     private static final int DECISION_INTERVAL = 3;
     private static final int MIN_REVERSE_TICKS = 30;
     private static final double REEQUIP_DIFF_PERCENT = 8.0d;
-    private static final boolean FORCE_SIMPLE_HELMET_TEST = true;
+    private static final boolean FORCE_SIMPLE_HELMET_TEST = false;
 
+    // PlayerInventory slot indexes (Fabric/Yarn 1.21.11):
+    // boots=36, leggings=37, chestplate=38, helmet=39
     private final Path configPath = FabricLoader.getInstance().getConfigDir().resolve("autopot-automend.properties");
 
     public void setToggleKey(KeyBinding toggleKey) {
@@ -110,7 +120,7 @@ public class AutoMend {
             client.player.sendMessage(net.minecraft.text.Text.literal("§7[AutoMend] q=" + moveQueue.size() + " pend=" + pendingConfirmTicks + " cd=" + swapCooldownTicks + " d=" + actionDelayTicks + " xp=" + holdingXp), true);
         }
 
-        ScreenHandler handler = client.player.playerScreenHandler;
+        ScreenHandler handler = client.player.currentScreenHandler;
         if (!(handler instanceof PlayerScreenHandler)) return;
 
         if (FORCE_SIMPLE_HELMET_TEST) {
@@ -122,7 +132,7 @@ public class AutoMend {
         if (swapCooldownTicks > 0) { swapCooldownTicks--; return; }
         if (actionDelayTicks > 0) { actionDelayTicks--; return; }
 
-        if (!moveQueue.isEmpty()) {
+        if (inFlightMove != null || !moveQueue.isEmpty()) {
             executeNext(handler, client);
             return;
         }
@@ -135,107 +145,136 @@ public class AutoMend {
     }
 
     private void runSimpleHelmetUnequipTest(ScreenHandler handler, MinecraftClient client) {
-        Slot helmetSlot = null;
-        for (Slot slot : handler.slots) {
-            if (slot.inventory instanceof PlayerInventory && slot.getIndex() == 39) {
-                helmetSlot = slot;
-                break;
-            }
-        }
+        if (worldTick % 40 != 0) return;
+        if (client.player == null || client.interactionManager == null) return;
 
+        Slot helmetSlot = findArmorSlotByInventoryIndex(handler, 39);
         if (helmetSlot == null) {
-            debug("simple-test: helmet slot not found syncId=" + handler.syncId + " size=" + handler.slots.size());
+            debug("simple-test: helmet slot not found syncId=" + handler.syncId + " size=" + handler.slots.size() + " handler=" + handler.getClass().getSimpleName());
             return;
         }
-
         if (!helmetSlot.hasStack()) {
             debug("simple-test: helmet already empty slotId=" + helmetSlot.id + " invIdx=" + helmetSlot.getIndex());
             return;
         }
 
-        if (client.interactionManager == null || client.player == null) return;
+        Slot destination = findFirstOpenStorageSlot(handler);
+        if (destination == null) {
+            debug("simple-test: no destination slot for helmet");
+            return;
+        }
 
-        debug("simple-test: QUICK_MOVE helmet syncId=" + handler.syncId + " slotId=" + helmetSlot.id + " invIdx=" + helmetSlot.getIndex() + " item=" + helmetSlot.getStack());
-        ItemStack before = helmetSlot.getStack().copy();
-        client.interactionManager.clickSlot(handler.syncId, helmetSlot.id, 0, SlotActionType.QUICK_MOVE, client.player);
+        debug("simple-test: move helmet syncId=" + handler.syncId + " handler=" + handler.getClass().getSimpleName()
+                + " from(slotId=" + helmetSlot.id + ",invIdx=" + helmetSlot.getIndex() + ")"
+                + " to(slotId=" + destination.id + ",invIdx=" + destination.getIndex() + ")"
+                + " cursorBefore=" + handler.getCursorStack());
 
-        ItemStack after = helmetSlot.getStack();
-        debug("simple-test: after move helmetEmpty=" + after.isEmpty() + " before=" + before + " after=" + after + " cursor=" + handler.getCursorStack());
+        click(handler.syncId, helmetSlot.id, client);
+        debug("simple-test: after pickup cursor=" + handler.getCursorStack() + " fromHas=" + helmetSlot.hasStack());
+
+        click(handler.syncId, destination.id, client);
+        debug("simple-test: after place cursor=" + handler.getCursorStack() + " dstHas=" + destination.hasStack());
+
+        if (!handler.getCursorStack().isEmpty()) {
+            debug("simple-test: cursor not empty, reverting to source slotId=" + helmetSlot.id);
+            click(handler.syncId, helmetSlot.id, client);
+        }
     }
 
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
-        List<ArmorState> armor = getArmorStates(handler);
-        if (armor.isEmpty()) return;
+        List<ArmorState> equipped = getArmorStates(handler);
+        if (equipped.isEmpty()) return;
 
-        double diffPercent = armor.stream().mapToDouble(ArmorState::ratio).max().orElse(1.0d)
-                - armor.stream().mapToDouble(ArmorState::ratio).min().orElse(1.0d);
-        diffPercent *= 100.0d;
+        int bottleCount = countXpBottles(client);
+        boolean holdingXp = isHoldingXpBottle(client);
+        boolean lowXpPhase = bottleCount <= lowBottleCountThreshold;
 
-        boolean lowXp = isLowXp(client);
-        double unequipThreshold = lowXp ? balanceTolerancePercent + 6.0d : balanceTolerancePercent;
-
-        // Runtime fix: if actively mending with XP and all armor slots are filled,
-        // allow a gentle proactive unequip of the healthiest piece even when spread is small.
-        if (isHoldingXpBottle(client) && findEmptyArmorSlot(handler) == null) {
-            Slot destination = findFirstOpenStorageSlot(handler);
-            if (destination != null && allowDirectionChange(true)) {
-                ArmorState healthiest = armor.stream().filter(a -> !a.binding)
-                        .max(Comparator.comparingDouble(this::weightedMetricForUnequip)).orElse(null);
-                if (healthiest != null) {
+        // Phase A: while actively mending, cap pieces at target raw (e.g. 400) by unequipping once they pass target.
+        if (holdingXp && findEmptyArmorSlotWithType(handler) == null) {
+            ArmorState aboveTarget = equipped.stream()
+                    .filter(a -> !a.binding)
+                    .filter(a -> a.remainingRaw >= phaseTargetRaw)
+                    .max(Comparator.comparingInt(ArmorState::remainingRaw))
+                    .orElse(null);
+            if (aboveTarget != null && allowDirectionChange(true)) {
+                Slot destination = findFirstOpenStorageSlot(handler);
+                if (destination != null) {
                     reservedDestinations.add(destination.id);
-                    moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "xp_mend_proactive"));
+                    moveQueue.addLast(new SlotMove(aboveTarget.slotId, destination.id, worldTick, "unequip_at_target"));
                     lastDirectionUnequip = true;
                     lastReverseTick = worldTick;
-                    debug("queue proactive mend " + healthiest.slotId + "->" + destination.id);
+                    debug("queued target-cap unequip " + aboveTarget.slotId + "->" + destination.id + " target=" + phaseTargetRaw + " bottles=" + bottleCount);
                     return;
                 }
             }
         }
 
-        if (diffPercent >= unequipThreshold) {
-            if (!allowDirectionChange(true)) return;
-            Slot destination = findFirstOpenStorageSlot(handler);
-            if (destination == null) return;
-
-            Comparator<ArmorState> cmp = Comparator.comparingDouble(this::weightedMetricForUnequip);
-            ArmorState healthiest = armor.stream().filter(a -> !a.binding).max(cmp).orElse(null);
-            if (healthiest == null) return;
-            if (sameTargetStreak >= 3 && healthiest.slotId == lastActionFrom) return;
-
-            reservedDestinations.add(destination.id);
-            moveQueue.addLast(new SlotMove(healthiest.slotId, destination.id, worldTick, "unequip_balance"));
-            lastDirectionUnequip = true;
-            lastReverseTick = worldTick;
-            debug("queued unequip " + healthiest.slotId + "->" + destination.id);
-            return;
+        // Phase B: if we have empty armor slots and we are still in bottle-rich phase,
+        // keep mending by re-equipping below-target pieces first.
+        EmptyArmorSlot emptyArmor = findEmptyArmorSlotWithType(handler);
+        if (emptyArmor != null && allowDirectionChange(false) && !lowXpPhase) {
+            ArmorState candidate = findStorageArmorForSlotUnderTarget(handler, emptyArmor.eqSlot, phaseTargetRaw);
+            if (candidate != null) {
+                moveQueue.addLast(new SlotMove(candidate.slotId, emptyArmor.slot.id, worldTick, "reequip_under_target"));
+                lastDirectionUnequip = false;
+                lastReverseTick = worldTick;
+                debug("queued under-target re-equip " + candidate.slotId + "->" + emptyArmor.slot.id + " rem=" + candidate.remainingRaw);
+                return;
+            }
         }
 
-        if (diffPercent <= REEQUIP_DIFF_PERCENT) {
-            if (!allowDirectionChange(false)) return;
-            ArmorState bestStorage = findBestStorageArmor(handler);
-            Slot emptyArmor = findEmptyArmorSlot(handler);
-            if (bestStorage == null || emptyArmor == null) return;
-            if (reservedDestinations.contains(emptyArmor.id)) return;
-
-            moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.id, worldTick, "reequip_stable"));
-            lastDirectionUnequip = false;
-            lastReverseTick = worldTick;
-            debug("queued re-equip " + bestStorage.slotId + "->" + emptyArmor.id);
+        // Phase C (final mend with low bottles): equalize to the highest common raw value.
+        if (emptyArmor != null && allowDirectionChange(false)) {
+            ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
+            if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
+                int targetRaw = getEqualizeTargetRaw(handler, equipped, emptyArmor.eqSlot);
+                int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
+                if (diff <= reEquipToleranceRaw || !holdingXp) {
+                    moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
+                    lastDirectionUnequip = false;
+                    lastReverseTick = worldTick;
+                    debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount);
+                    return;
+                }
+            }
         }
     }
 
     private void executeNext(ScreenHandler handler, MinecraftClient client) {
-        SlotMove move = moveQueue.pollFirst();
-        if (move == null) return;
+        if (inFlightMove == null) {
+            inFlightMove = moveQueue.pollFirst();
+            inFlightPickedUp = false;
+            if (inFlightMove == null) return;
+        }
+
+        SlotMove move = inFlightMove;
         Slot from = getSlotById(handler, move.fromSlotId);
         Slot to = getSlotById(handler, move.toSlotId);
 
-        if (from == null || to == null || !from.hasStack()) { resetQueue(); return; }
-        ItemStack source = from.getStack();
-        if (safeInventoryMode && (!to.canInsert(source) || source.isEmpty())) { resetQueue(); return; }
+        if (from == null || to == null) { resetQueue(); return; }
 
-        debug("click move " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId);
-        click(handler.syncId, move.fromSlotId, client);
+        if (!inFlightPickedUp) {
+            if (!from.hasStack()) { inFlightMove = null; return; }
+            ItemStack source = from.getStack();
+            if (safeInventoryMode && (!to.canInsert(source) || source.isEmpty())) { resetQueue(); return; }
+
+            debug("click pickup " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId + " cursor=" + handler.getCursorStack());
+            click(handler.syncId, move.fromSlotId, client);
+            inFlightPickedUp = true;
+            pendingConfirmTicks = 1;
+            actionDelayTicks = 1;
+            return;
+        }
+
+        // second stage: place on a later tick after revision/cursor update
+        if (handler.getCursorStack().isEmpty()) {
+            debug("pickup lost before place; aborting move from=" + move.fromSlotId + " to=" + move.toSlotId);
+            inFlightMove = null;
+            inFlightPickedUp = false;
+            return;
+        }
+
+        debug("click place " + move.reason + " sync=" + handler.syncId + " from=" + move.fromSlotId + " to=" + move.toSlotId + " cursor=" + handler.getCursorStack());
         click(handler.syncId, move.toSlotId, client);
 
         if (move.fromSlotId == lastActionFrom || move.toSlotId == lastActionTo) sameTargetStreak++;
@@ -248,6 +287,9 @@ public class AutoMend {
         swapCooldownTicks = postActionCooldownTicks + random.nextInt(5);
         pendingConfirmTicks = 1;
         reservedDestinations.remove(move.toSlotId);
+
+        inFlightMove = null;
+        inFlightPickedUp = false;
     }
 
     private List<ArmorState> getArmorStates(ScreenHandler handler) {
@@ -317,6 +359,63 @@ public class AutoMend {
                 .orElse(null);
     }
 
+    private ArmorState findBestStorageArmorForSlot(ScreenHandler handler, EquipmentSlot eqSlot) {
+        return handler.slots.stream()
+                .filter(this::isStorageInventorySlot)
+                .filter(Slot::hasStack)
+                .map(slot -> {
+                    ItemStack stack = slot.getStack();
+                    EquipmentSlot eq = getEquipmentSlot(stack);
+                    if (eq == null || eq != eqSlot) return null;
+                    return new ArmorState(slot.id, eq, durabilityRatio(stack), getRemainingDurability(stack), hasBindingCurse(stack), stack.getEnchantments().getSize());
+                })
+                .filter(Objects::nonNull)
+                .max(Comparator.comparingInt(ArmorState::remainingRaw))
+                .orElse(null);
+    }
+
+    private int getTargetRawForSlot(List<ArmorState> equippedArmor, EquipmentSlot slot) {
+        return equippedArmor.stream()
+                .filter(a -> a.eqSlot != slot)
+                .mapToInt(ArmorState::remainingRaw)
+                .max()
+                .orElse(0);
+    }
+
+    private ArmorState findStorageArmorForSlotUnderTarget(ScreenHandler handler, EquipmentSlot eqSlot, int targetRaw) {
+        return handler.slots.stream()
+                .filter(this::isStorageInventorySlot)
+                .filter(Slot::hasStack)
+                .map(slot -> {
+                    ItemStack stack = slot.getStack();
+                    EquipmentSlot eq = getEquipmentSlot(stack);
+                    if (eq == null || eq != eqSlot) return null;
+                    ArmorState st = new ArmorState(slot.id, eq, durabilityRatio(stack), getRemainingDurability(stack), hasBindingCurse(stack), stack.getEnchantments().getSize());
+                    return st.remainingRaw < targetRaw ? st : null;
+                })
+                .filter(Objects::nonNull)
+                .min(Comparator.comparingInt(ArmorState::remainingRaw))
+                .orElse(null);
+    }
+
+    private int getEqualizeTargetRaw(ScreenHandler handler, List<ArmorState> equippedArmor, EquipmentSlot missingSlot) {
+        List<Integer> values = new ArrayList<>();
+        for (ArmorState a : equippedArmor) values.add(a.remainingRaw);
+        ArmorState storageCandidate = findBestStorageArmorForSlot(handler, missingSlot);
+        if (storageCandidate != null) values.add(storageCandidate.remainingRaw);
+        return values.stream().min(Integer::compareTo).orElse(0);
+    }
+
+    private int countXpBottles(MinecraftClient client) {
+        int total = 0;
+        PlayerInventory inv = client.player.getInventory();
+        for (int i = 0; i < inv.size(); i++) {
+            ItemStack stack = inv.getStack(i);
+            if (stack.isOf(net.minecraft.item.Items.EXPERIENCE_BOTTLE)) total += stack.getCount();
+        }
+        return total;
+    }
+
     private Slot findFirstOpenStorageSlot(ScreenHandler handler) {
         for (Slot slot : handler.slots) {
             if (!isStorageInventorySlot(slot) || reservedDestinations.contains(slot.id)) continue;
@@ -325,9 +424,11 @@ public class AutoMend {
         return null;
     }
 
-    private Slot findEmptyArmorSlot(ScreenHandler handler) {
+    private EmptyArmorSlot findEmptyArmorSlotWithType(ScreenHandler handler) {
         for (Slot slot : handler.slots) {
-            if (isArmorInventorySlot(slot) && !slot.hasStack()) return slot;
+            if (!isArmorInventorySlot(slot) || slot.hasStack()) continue;
+            EquipmentSlot eq = equipmentSlotFromArmorInventoryIndex(slot.getIndex());
+            if (eq != null) return new EmptyArmorSlot(slot, eq);
         }
         return null;
     }
@@ -353,7 +454,27 @@ public class AutoMend {
     }
 
     private boolean isArmorInventorySlot(Slot slot) {
-        return slot.inventory instanceof PlayerInventory && slot.getIndex() >= 36 && slot.getIndex() <= 39;
+        if (!(slot.inventory instanceof PlayerInventory)) return false;
+        int idx = slot.getIndex();
+        return idx >= 36 && idx <= 39;
+    }
+
+    private EquipmentSlot equipmentSlotFromArmorInventoryIndex(int idx) {
+        return switch (idx) {
+            case 36 -> EquipmentSlot.FEET;
+            case 37 -> EquipmentSlot.LEGS;
+            case 38 -> EquipmentSlot.CHEST;
+            case 39 -> EquipmentSlot.HEAD;
+            default -> null;
+        };
+    }
+
+    private Slot findArmorSlotByInventoryIndex(ScreenHandler handler, int inventoryIndex) {
+        for (Slot slot : handler.slots) {
+            if (!(slot.inventory instanceof PlayerInventory)) continue;
+            if (slot.getIndex() == inventoryIndex) return slot;
+        }
+        return null;
     }
 
     private boolean isStorageInventorySlot(Slot slot) {
@@ -396,6 +517,8 @@ public class AutoMend {
         reservedDestinations.clear();
         pendingConfirmTicks = 0;
         cacheArmorRevision = -1;
+        inFlightMove = null;
+        inFlightPickedUp = false;
     }
 
     private void resetRuntimeState() {
@@ -425,6 +548,11 @@ public class AutoMend {
             debugMode = Boolean.parseBoolean(p.getProperty("debugMode", "false"));
             xpOnlyActivation = Boolean.parseBoolean(p.getProperty("xpOnlyActivation", "false"));
             weightedChestplatePriority = Boolean.parseBoolean(p.getProperty("weightedChestplatePriority", "true"));
+            unequipTargetRemainingRaw = Integer.parseInt(p.getProperty("unequipTargetRemainingRaw", "405"));
+            equalizeGapRaw = Integer.parseInt(p.getProperty("equalizeGapRaw", "8"));
+            reEquipToleranceRaw = Integer.parseInt(p.getProperty("reEquipToleranceRaw", "2"));
+            phaseTargetRaw = Integer.parseInt(p.getProperty("phaseTargetRaw", "400"));
+            lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
         } catch (Exception ignored) {}
     }
 
@@ -443,6 +571,11 @@ public class AutoMend {
             p.setProperty("debugMode", Boolean.toString(debugMode));
             p.setProperty("xpOnlyActivation", Boolean.toString(xpOnlyActivation));
             p.setProperty("weightedChestplatePriority", Boolean.toString(weightedChestplatePriority));
+            p.setProperty("unequipTargetRemainingRaw", Integer.toString(unequipTargetRemainingRaw));
+            p.setProperty("equalizeGapRaw", Integer.toString(equalizeGapRaw));
+            p.setProperty("reEquipToleranceRaw", Integer.toString(reEquipToleranceRaw));
+            p.setProperty("phaseTargetRaw", Integer.toString(phaseTargetRaw));
+            p.setProperty("lowBottleCountThreshold", Integer.toString(lowBottleCountThreshold));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
