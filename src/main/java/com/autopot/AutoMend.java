@@ -274,7 +274,7 @@ public class AutoMend {
     }
 
     private boolean isMoving(MinecraftClient client) {
-        Vec3d pos = client.player.getPos();
+        Vec3d pos = new Vec3d(client.player.getX(), client.player.getY(), client.player.getZ());
         boolean moving = pos.squaredDistanceTo(lastPos) > 0.0009;
         lastPos = pos;
         return moving;
