@@ -132,19 +132,11 @@ public class PotManager {
                 if (consumed || emptySlotDone || timedOut) {
                     stepIndex++;
 
-                    if (stepIndex >= steps.size()) {
-                        waitTick = 0;
-                        state = State.DONE;
-                    } else {
+                    while (stepIndex < steps.size()) {
                         int nextSlot = findPotionSlot(client, steps.get(stepIndex).effect());
-
                         if (nextSlot == -1) {
                             stepIndex++;
-                            if (stepIndex >= steps.size()) {
-                                waitTick = 0;
-                                state = State.DONE;
-                            }
-                            return;
+                            continue;
                         }
 
                         if (nextSlot != currentSlot) {
@@ -157,7 +149,11 @@ public class PotManager {
                             waitTick = 0;
                             state = State.PRESSING;
                         }
+                        return;
                     }
+
+                    waitTick = 0;
+                    state = State.DONE;
                 }
             }
 
