@@ -67,15 +67,17 @@ public class PotManager {
             }
         }
 
-        // ── BUFFS ─────────────────────────────────────────────────────────────
-        for (RegistryEntry<StatusEffect> buff : BUFF_EFFECTS) {
-            StatusEffectInstance instance = client.player.getStatusEffect(buff);
-            boolean expiring = instance != null && instance.getDuration() <= 200;
-            boolean missing = instance == null;
-            boolean forceRebuff = emergencyRebuff && (buff.equals(StatusEffects.SPEED) || buff.equals(StatusEffects.STRENGTH));
-            if (forceRebuff || expiring || missing) {
-                if (findPotionSlot(client, buff) != -1) {
-                    steps.add(new Step(buff));
+        // At critical health, prioritize healing only and skip rebuffs.
+        if (health > 6.0f) {
+            // ── BUFFS ─────────────────────────────────────────────────────────
+            for (RegistryEntry<StatusEffect> buff : BUFF_EFFECTS) {
+                StatusEffectInstance instance = client.player.getStatusEffect(buff);
+                boolean expiring = instance != null && instance.getDuration() <= 200;
+                boolean missing = instance == null;
+                if (expiring || missing) {
+                    if (findPotionSlot(client, buff) != -1) {
+                        steps.add(new Step(buff));
+                    }
                 }
             }
         }
