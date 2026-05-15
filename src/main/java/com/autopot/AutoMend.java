@@ -67,6 +67,7 @@ public class AutoMend {
     private static final int DECISION_INTERVAL = 3;
     private static final int MIN_REVERSE_TICKS = 30;
     private static final double REEQUIP_DIFF_PERCENT = 8.0d;
+    private static final boolean FORCE_SIMPLE_HELMET_TEST = true;
 
     private final Path configPath = FabricLoader.getInstance().getConfigDir().resolve("autopot-automend.properties");
 
@@ -103,10 +104,7 @@ public class AutoMend {
         if (!enabled || !AutoPotMod.enabled || client.player == null || client.interactionManager == null) return;
         if (client.world == null) { resetRuntimeState(); return; }
         if (client.currentScreen != null) { resetQueue(); return; }
-        if (pauseWhileMoving && isMoving(client)) return;
-        if (pauseNearEnemies && hasNearbyThreat(client)) return;
         boolean holdingXp = isHoldingXpBottle(client);
-        if (xpOnlyActivation && !holdingXp) return;
 
         if (debugMode && worldTick % 20 == 0 && client.player != null) {
             client.player.sendMessage(net.minecraft.text.Text.literal("§7[AutoMend] q=" + moveQueue.size() + " pend=" + pendingConfirmTicks + " cd=" + swapCooldownTicks + " d=" + actionDelayTicks + " xp=" + holdingXp), true);
@@ -114,6 +112,11 @@ public class AutoMend {
 
         ScreenHandler handler = client.player.playerScreenHandler;
         if (!(handler instanceof PlayerScreenHandler)) return;
+
+        if (FORCE_SIMPLE_HELMET_TEST) {
+            runSimpleHelmetUnequipTest(handler, client);
+            return;
+        }
 
         if (!syncGate(handler)) return;
         if (swapCooldownTicks > 0) { swapCooldownTicks--; return; }
@@ -129,6 +132,35 @@ public class AutoMend {
 
         queueSmartMove(handler, client);
         if (!moveQueue.isEmpty()) executeNext(handler, client);
+    }
+
+    private void runSimpleHelmetUnequipTest(ScreenHandler handler, MinecraftClient client) {
+        Slot helmetSlot = null;
+        for (Slot slot : handler.slots) {
+            if (slot.inventory instanceof PlayerInventory && slot.getIndex() == 39) {
+                helmetSlot = slot;
+                break;
+            }
+        }
+
+        if (helmetSlot == null) {
+            debug("simple-test: helmet slot not found syncId=" + handler.syncId + " size=" + handler.slots.size());
+            return;
+        }
+
+        if (!helmetSlot.hasStack()) {
+            debug("simple-test: helmet already empty slotId=" + helmetSlot.id + " invIdx=" + helmetSlot.getIndex());
+            return;
+        }
+
+        if (client.interactionManager == null || client.player == null) return;
+
+        debug("simple-test: QUICK_MOVE helmet syncId=" + handler.syncId + " slotId=" + helmetSlot.id + " invIdx=" + helmetSlot.getIndex() + " item=" + helmetSlot.getStack());
+        ItemStack before = helmetSlot.getStack().copy();
+        client.interactionManager.clickSlot(handler.syncId, helmetSlot.id, 0, SlotActionType.QUICK_MOVE, client.player);
+
+        ItemStack after = helmetSlot.getStack();
+        debug("simple-test: after move helmetEmpty=" + after.isEmpty() + " before=" + before + " after=" + after + " cursor=" + handler.getCursorStack());
     }
 
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
