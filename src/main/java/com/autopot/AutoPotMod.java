@@ -13,10 +13,12 @@ public class AutoPotMod implements ClientModInitializer {
 
     public static KeyBinding toggleKey;
     public static KeyBinding potKey;
+    public static KeyBinding mendToggleKey;
     public static boolean enabled = false;
 
     private final PotManager potManager = new PotManager();
     private final AutoRefillHandler refillHandler = new AutoRefillHandler();
+    private final AutoMend mendModule = new AutoMend();
 
     private static final KeyBinding.Category CATEGORY =
             KeyBinding.Category.create(Identifier.of("autopot", "main"));
@@ -37,6 +39,15 @@ public class AutoPotMod implements ClientModInitializer {
                 CATEGORY
         ));
 
+        mendToggleKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+                "key.autopot.mend_toggle",
+                InputUtil.Type.KEYSYM,
+                mendModule.getDefaultKey(),
+                CATEGORY
+        ));
+        mendModule.setToggleKey(mendToggleKey);
+        mendModule.loadConfig();
+
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (client.player == null || client.world == null) return;
 
@@ -46,6 +57,7 @@ public class AutoPotMod implements ClientModInitializer {
                         Text.literal("§6AutoPot §r" + (enabled ? "§aEnabled" : "§cDisabled")),
                         true
                 );
+                mendModule.saveConfig();
             }
 
             while (potKey.wasPressed()) {
@@ -54,6 +66,7 @@ public class AutoPotMod implements ClientModInitializer {
 
             potManager.tick(client);
             refillHandler.tick(client);
+            mendModule.tick(client);
         });
     }
 }
