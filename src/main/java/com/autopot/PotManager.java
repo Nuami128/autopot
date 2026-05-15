@@ -67,18 +67,17 @@ public class PotManager {
             }
         }
 
-        // At critical health, prioritize healing only and skip rebuffs.
-        if (health > 6.0f) {
-            // ── BUFFS ─────────────────────────────────────────────────────────
-            for (RegistryEntry<StatusEffect> buff : BUFF_EFFECTS) {
-                StatusEffectInstance instance = client.player.getStatusEffect(buff);
-                boolean expiring = instance != null && instance.getDuration() <= 200;
-                boolean missing = instance == null;
-                if (expiring || missing) {
-                    if (findPotionSlot(client, buff) != -1) {
-                        steps.add(new Step(buff));
-                    }
-                }
+        // ── BUFFS ─────────────────────────────────────────────────────────────
+        // At critical health, only reapply completely missing buffs.
+        // Above critical health, keep normal missing/expiring rebuff behavior.
+        boolean criticalHealth = health <= 6.0f;
+        for (RegistryEntry<StatusEffect> buff : BUFF_EFFECTS) {
+            StatusEffectInstance instance = client.player.getStatusEffect(buff);
+            boolean expiring = instance != null && instance.getDuration() <= 200;
+            boolean missing = instance == null;
+            boolean shouldBuff = criticalHealth ? missing : (missing || expiring);
+            if (shouldBuff && findPotionSlot(client, buff) != -1) {
+                steps.add(new Step(buff));
             }
         }
 
