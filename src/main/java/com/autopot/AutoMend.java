@@ -111,7 +111,7 @@ public class AutoMend {
             while (toggleKey.wasPressed()) handleToggle(client);
         }
 
-        if (!enabled || !AutoPotMod.enabled || client.player == null || client.interactionManager == null) return;
+        if (!enabled || client.player == null || client.interactionManager == null) return;
         if (client.world == null) { resetRuntimeState(); return; }
         if (client.currentScreen != null) { resetQueue(); return; }
         boolean holdingXp = isHoldingXpBottle(client);
@@ -125,6 +125,13 @@ public class AutoMend {
 
         if (FORCE_SIMPLE_HELMET_TEST) {
             runSimpleHelmetUnequipTest(handler, client);
+            return;
+        }
+
+        // Continue in-flight pickup/place even if revision ack is pending.
+        if (inFlightMove != null) {
+            if (actionDelayTicks > 0) { actionDelayTicks--; return; }
+            executeNext(handler, client);
             return;
         }
 
