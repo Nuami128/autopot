@@ -69,6 +69,8 @@ public class AutoMend {
     private static final double REEQUIP_DIFF_PERCENT = 8.0d;
     private static final boolean FORCE_SIMPLE_HELMET_TEST = false;
 
+    // PlayerInventory slot indexes (Fabric/Yarn 1.21.11):
+    // boots=36, leggings=37, chestplate=38, helmet=39
     private final Path configPath = FabricLoader.getInstance().getConfigDir().resolve("autopot-automend.properties");
 
     public void setToggleKey(KeyBinding toggleKey) {
@@ -138,7 +140,7 @@ public class AutoMend {
         if (worldTick % 40 != 0) return;
         if (client.player == null || client.interactionManager == null) return;
 
-        Slot helmetSlot = findEquippedArmorSlot(handler, EquipmentSlot.HEAD);
+        Slot helmetSlot = findArmorSlotByInventoryIndex(handler, 39);
         if (helmetSlot == null) {
             debug("simple-test: helmet slot not found syncId=" + handler.syncId + " size=" + handler.slots.size() + " handler=" + handler.getClass().getSimpleName());
             return;
@@ -366,11 +368,10 @@ public class AutoMend {
         return idx >= 36 && idx <= 39;
     }
 
-    private Slot findEquippedArmorSlot(ScreenHandler handler, EquipmentSlot equipmentSlot) {
+    private Slot findArmorSlotByInventoryIndex(ScreenHandler handler, int inventoryIndex) {
         for (Slot slot : handler.slots) {
-            if (!(slot.inventory instanceof PlayerInventory) || !slot.hasStack()) continue;
-            EquipmentSlot eq = getEquipmentSlot(slot.getStack());
-            if (eq == equipmentSlot) return slot;
+            if (!(slot.inventory instanceof PlayerInventory)) continue;
+            if (slot.getIndex() == inventoryIndex) return slot;
         }
         return null;
     }
