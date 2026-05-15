@@ -3,6 +3,7 @@ package com.autopot;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.EquippableComponent;
 import net.minecraft.entity.EquipmentSlot;
@@ -63,6 +64,7 @@ public class AutoMend {
     private long worldTick = 0;
     private SlotMove inFlightMove = null;
     private boolean inFlightPickedUp = false;
+    private boolean openedInventoryForMove = false;
     private long lastDecisionTick = -100;
     private long lastBalanceCalcTick = -100;
     private long lastReverseTick = -200;
@@ -113,7 +115,7 @@ public class AutoMend {
 
         if (!enabled || client.player == null || client.interactionManager == null) return;
         if (client.world == null) { resetRuntimeState(); return; }
-        if (client.currentScreen != null) { resetQueue(); return; }
+        if (client.currentScreen != null && !openedInventoryForMove) { resetQueue(); return; }
         boolean holdingXp = isHoldingXpBottle(client);
 
         if (debugMode && worldTick % 20 == 0 && client.player != null) {
@@ -197,7 +199,7 @@ public class AutoMend {
         boolean lowXpPhase = bottleCount <= lowBottleCountThreshold;
 
         // Phase A: while actively mending, cap pieces at target raw (e.g. 400) by unequipping once they pass target.
-        if (holdingXp && findEmptyArmorSlotWithType(handler) == null) {
+        if (holdingXp) {
             ArmorState aboveTarget = equipped.stream()
                     .filter(a -> !a.binding)
                     .filter(a -> a.remainingRaw >= phaseTargetRaw)
@@ -251,7 +253,15 @@ public class AutoMend {
         if (inFlightMove == null) {
             inFlightMove = moveQueue.pollFirst();
             inFlightPickedUp = false;
+            openedInventoryForMove = false;
             if (inFlightMove == null) return;
+        }
+
+        if (!openedInventoryForMove && client.currentScreen == null && client.player != null) {
+            client.setScreen(new InventoryScreen(client.player));
+            openedInventoryForMove = true;
+            actionDelayTicks = 1;
+            return;
         }
 
         SlotMove move = inFlightMove;
@@ -278,6 +288,10 @@ public class AutoMend {
             debug("pickup lost before place; aborting move from=" + move.fromSlotId + " to=" + move.toSlotId);
             inFlightMove = null;
             inFlightPickedUp = false;
+            if (openedInventoryForMove) {
+                client.setScreen(null);
+                openedInventoryForMove = false;
+            }
             return;
         }
 
@@ -297,6 +311,10 @@ public class AutoMend {
 
         inFlightMove = null;
         inFlightPickedUp = false;
+        if (openedInventoryForMove) {
+            client.setScreen(null);
+            openedInventoryForMove = false;
+        }
     }
 
     private List<ArmorState> getArmorStates(ScreenHandler handler) {
@@ -526,6 +544,10 @@ public class AutoMend {
         cacheArmorRevision = -1;
         inFlightMove = null;
         inFlightPickedUp = false;
+        if (openedInventoryForMove) {
+            client.setScreen(null);
+            openedInventoryForMove = false;
+        }
     }
 
     private void resetRuntimeState() {
