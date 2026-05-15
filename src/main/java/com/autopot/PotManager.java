@@ -55,6 +55,7 @@ public class PotManager {
         currentSlot = prevSlot;
 
         float health = client.player.getHealth();
+        boolean emergencyRebuff = health <= 6.0f;
 
         // ── HEALING ───────────────────────────────────────────────────────────
         if (findPotionSlot(client, StatusEffects.INSTANT_HEALTH) != -1) {
@@ -71,7 +72,8 @@ public class PotManager {
             StatusEffectInstance instance = client.player.getStatusEffect(buff);
             boolean expiring = instance != null && instance.getDuration() <= 200;
             boolean missing = instance == null;
-            if (expiring || missing) {
+            boolean forceRebuff = emergencyRebuff && (buff.equals(StatusEffects.SPEED) || buff.equals(StatusEffects.STRENGTH));
+            if (forceRebuff || expiring || missing) {
                 if (findPotionSlot(client, buff) != -1) {
                     steps.add(new Step(buff));
                 }
