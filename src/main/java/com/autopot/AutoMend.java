@@ -312,7 +312,8 @@ public class AutoMend {
         inFlightMove = null;
         inFlightPickedUp = false;
         if (openedInventoryForMove) {
-            client.setScreen(null);
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc != null) mc.setScreen(null);
             openedInventoryForMove = false;
         }
     }
@@ -545,7 +546,8 @@ public class AutoMend {
         inFlightMove = null;
         inFlightPickedUp = false;
         if (openedInventoryForMove) {
-            client.setScreen(null);
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc != null) mc.setScreen(null);
             openedInventoryForMove = false;
         }
     }
