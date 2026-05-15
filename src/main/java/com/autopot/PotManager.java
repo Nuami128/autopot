@@ -67,14 +67,16 @@ public class PotManager {
         }
 
         // ── BUFFS ─────────────────────────────────────────────────────────────
+        // At critical health, only reapply completely missing buffs.
+        // Above critical health, keep normal missing/expiring rebuff behavior.
+        boolean criticalHealth = health <= 6.0f;
         for (RegistryEntry<StatusEffect> buff : BUFF_EFFECTS) {
             StatusEffectInstance instance = client.player.getStatusEffect(buff);
             boolean expiring = instance != null && instance.getDuration() <= 200;
             boolean missing = instance == null;
-            if (expiring || missing) {
-                if (findPotionSlot(client, buff) != -1) {
-                    steps.add(new Step(buff));
-                }
+            boolean shouldBuff = criticalHealth ? missing : (missing || expiring);
+            if (shouldBuff && findPotionSlot(client, buff) != -1) {
+                steps.add(new Step(buff));
             }
         }
 
@@ -130,19 +132,11 @@ public class PotManager {
                 if (consumed || emptySlotDone || timedOut) {
                     stepIndex++;
 
-                    if (stepIndex >= steps.size()) {
-                        waitTick = 0;
-                        state = State.DONE;
-                    } else {
+                    while (stepIndex < steps.size()) {
                         int nextSlot = findPotionSlot(client, steps.get(stepIndex).effect());
-
                         if (nextSlot == -1) {
                             stepIndex++;
-                            if (stepIndex >= steps.size()) {
-                                waitTick = 0;
-                                state = State.DONE;
-                            }
-                            return;
+                            continue;
                         }
 
                         if (nextSlot != currentSlot) {
@@ -155,7 +149,11 @@ public class PotManager {
                             waitTick = 0;
                             state = State.PRESSING;
                         }
+                        return;
                     }
+
+                    waitTick = 0;
+                    state = State.DONE;
                 }
             }
 
