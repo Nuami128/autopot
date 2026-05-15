@@ -55,6 +55,7 @@ public class PotManager {
         currentSlot = prevSlot;
 
         float health = client.player.getHealth();
+        boolean emergencyRebuff = health <= 6.0f;
 
         // ── HEALING ───────────────────────────────────────────────────────────
         if (findPotionSlot(client, StatusEffects.INSTANT_HEALTH) != -1) {
