@@ -67,8 +67,10 @@ public class AutoMend {
     private static final int DECISION_INTERVAL = 3;
     private static final int MIN_REVERSE_TICKS = 30;
     private static final double REEQUIP_DIFF_PERCENT = 8.0d;
-    private static final boolean FORCE_SIMPLE_HELMET_TEST = true;
+    private static final boolean FORCE_SIMPLE_HELMET_TEST = false;
 
+    // PlayerInventory slot indexes (Fabric/Yarn 1.21.11):
+    // boots=36, leggings=37, chestplate=38, helmet=39
     private final Path configPath = FabricLoader.getInstance().getConfigDir().resolve("autopot-automend.properties");
 
     public void setToggleKey(KeyBinding toggleKey) {
@@ -110,7 +112,7 @@ public class AutoMend {
             client.player.sendMessage(net.minecraft.text.Text.literal("§7[AutoMend] q=" + moveQueue.size() + " pend=" + pendingConfirmTicks + " cd=" + swapCooldownTicks + " d=" + actionDelayTicks + " xp=" + holdingXp), true);
         }
 
-        ScreenHandler handler = client.player.playerScreenHandler;
+        ScreenHandler handler = client.player.currentScreenHandler;
         if (!(handler instanceof PlayerScreenHandler)) return;
 
         if (FORCE_SIMPLE_HELMET_TEST) {
@@ -135,32 +137,40 @@ public class AutoMend {
     }
 
     private void runSimpleHelmetUnequipTest(ScreenHandler handler, MinecraftClient client) {
-        Slot helmetSlot = null;
-        for (Slot slot : handler.slots) {
-            if (slot.inventory instanceof PlayerInventory && slot.getIndex() == 39) {
-                helmetSlot = slot;
-                break;
-            }
-        }
+        if (worldTick % 40 != 0) return;
+        if (client.player == null || client.interactionManager == null) return;
 
+        Slot helmetSlot = findArmorSlotByInventoryIndex(handler, 39);
         if (helmetSlot == null) {
-            debug("simple-test: helmet slot not found syncId=" + handler.syncId + " size=" + handler.slots.size());
+            debug("simple-test: helmet slot not found syncId=" + handler.syncId + " size=" + handler.slots.size() + " handler=" + handler.getClass().getSimpleName());
             return;
         }
-
         if (!helmetSlot.hasStack()) {
             debug("simple-test: helmet already empty slotId=" + helmetSlot.id + " invIdx=" + helmetSlot.getIndex());
             return;
         }
 
-        if (client.interactionManager == null || client.player == null) return;
+        Slot destination = findFirstOpenStorageSlot(handler);
+        if (destination == null) {
+            debug("simple-test: no destination slot for helmet");
+            return;
+        }
 
-        debug("simple-test: QUICK_MOVE helmet syncId=" + handler.syncId + " slotId=" + helmetSlot.id + " invIdx=" + helmetSlot.getIndex() + " item=" + helmetSlot.getStack());
-        ItemStack before = helmetSlot.getStack().copy();
-        client.interactionManager.clickSlot(handler.syncId, helmetSlot.id, 0, SlotActionType.QUICK_MOVE, client.player);
+        debug("simple-test: move helmet syncId=" + handler.syncId + " handler=" + handler.getClass().getSimpleName()
+                + " from(slotId=" + helmetSlot.id + ",invIdx=" + helmetSlot.getIndex() + ")"
+                + " to(slotId=" + destination.id + ",invIdx=" + destination.getIndex() + ")"
+                + " cursorBefore=" + handler.getCursorStack());
 
-        ItemStack after = helmetSlot.getStack();
-        debug("simple-test: after move helmetEmpty=" + after.isEmpty() + " before=" + before + " after=" + after + " cursor=" + handler.getCursorStack());
+        click(handler.syncId, helmetSlot.id, client);
+        debug("simple-test: after pickup cursor=" + handler.getCursorStack() + " fromHas=" + helmetSlot.hasStack());
+
+        click(handler.syncId, destination.id, client);
+        debug("simple-test: after place cursor=" + handler.getCursorStack() + " dstHas=" + destination.hasStack());
+
+        if (!handler.getCursorStack().isEmpty()) {
+            debug("simple-test: cursor not empty, reverting to source slotId=" + helmetSlot.id);
+            click(handler.syncId, helmetSlot.id, client);
+        }
     }
 
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
@@ -353,7 +363,17 @@ public class AutoMend {
     }
 
     private boolean isArmorInventorySlot(Slot slot) {
-        return slot.inventory instanceof PlayerInventory && slot.getIndex() >= 36 && slot.getIndex() <= 39;
+        if (!(slot.inventory instanceof PlayerInventory)) return false;
+        int idx = slot.getIndex();
+        return idx >= 36 && idx <= 39;
+    }
+
+    private Slot findArmorSlotByInventoryIndex(ScreenHandler handler, int inventoryIndex) {
+        for (Slot slot : handler.slots) {
+            if (!(slot.inventory instanceof PlayerInventory)) continue;
+            if (slot.getIndex() == inventoryIndex) return slot;
+        }
+        return null;
     }
 
     private boolean isStorageInventorySlot(Slot slot) {
