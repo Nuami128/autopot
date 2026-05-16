@@ -66,6 +66,7 @@ public class AutoMend {
     private SlotMove inFlightMove = null;
     private boolean inFlightPickedUp = false;
     private boolean openedInventoryForMove = false;
+    private boolean inventorySessionActive = false;
     private long lastDecisionTick = -100;
     private long lastBalanceCalcTick = -100;
     private long lastReverseTick = -200;
@@ -138,6 +139,10 @@ public class AutoMend {
             actionDelayTicks = 0;
         }
 
+        if (isHoldingXpBottle(client) && areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw)) {
+            client.options.useKey.setPressed(false);
+        }
+
         // Continue in-flight pickup/place even if revision ack is pending.
         if (inFlightMove != null) {
             if (actionDelayTicks > 0) { actionDelayTicks--; return; }
@@ -199,7 +204,7 @@ public class AutoMend {
     }
 
     private boolean hasCappedEquippedArmor(ScreenHandler handler) {
-        int target = phaseTargetRaw + phaseTargetHysteresisRaw;
+        int target = phaseTargetRaw;
         for (ArmorState state : getArmorStates(handler)) {
             if (!state.binding && state.remainingRaw >= target) return true;
         }
@@ -212,8 +217,9 @@ public class AutoMend {
 
         int bottleCount = countXpBottles(client);
         boolean holdingXp = isHoldingXpBottle(client);
-        int target = phaseTargetRaw + phaseTargetHysteresisRaw;
+        int target = phaseTargetRaw;
         boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
+        boolean equippedSetAtTarget = areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw);
 
         boolean hasCappedEquippedPiece = equipped.stream().anyMatch(a -> !a.binding && a.remainingRaw >= target);
         if (holdingXp && hasCappedEquippedPiece && moveQueue.isEmpty() && inFlightMove == null) {
@@ -254,7 +260,7 @@ public class AutoMend {
             }
         }
 
-        if (!fullSetAtTarget) return;
+        if (!fullSetAtTarget || equippedSetAtTarget) return;
 
         List<EmptyArmorSlot> empties = new ArrayList<>();
         for (Slot slot : handler.slots) {
@@ -280,6 +286,15 @@ public class AutoMend {
             lastReverseTick = worldTick;
             debug("queued batch re-equip count=" + reequipped + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget);
         }
+    }
+
+    private boolean areAllEquippedArmorAtOrAboveTarget(ScreenHandler handler, int targetRaw) {
+        for (Slot slot : handler.slots) {
+            if (!isArmorInventorySlot(slot)) continue;
+            if (!slot.hasStack()) return false;
+            if (getRemainingDurability(slot.getStack()) < targetRaw) return false;
+        }
+        return true;
     }
 
     private boolean isFullSetAtOrAboveTarget(ScreenHandler handler, int targetRaw) {
@@ -312,6 +327,7 @@ public class AutoMend {
         if (!openedInventoryForMove && client.currentScreen == null && client.player != null) {
             client.setScreen(new InventoryScreen(client.player));
             openedInventoryForMove = true;
+            inventorySessionActive = true;
             actionDelayTicks = 1; // ~50ms at 20 TPS
             return;
         }
@@ -363,10 +379,11 @@ public class AutoMend {
 
         inFlightMove = null;
         inFlightPickedUp = false;
-        if (openedInventoryForMove) {
+        if (openedInventoryForMove && moveQueue.isEmpty() && inFlightMove == null) {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc != null) mc.setScreen(null);
             openedInventoryForMove = false;
+            inventorySessionActive = false;
             actionDelayTicks = Math.max(actionDelayTicks, 1);
         }
     }
@@ -598,6 +615,7 @@ public class AutoMend {
         cacheArmorRevision = -1;
         inFlightMove = null;
         inFlightPickedUp = false;
+        inventorySessionActive = false;
         if (openedInventoryForMove) {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc != null) mc.setScreen(null);
