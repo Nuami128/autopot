@@ -236,8 +236,9 @@ public class AutoMend {
 
     private boolean hasCappedEquippedArmor(ScreenHandler handler) {
         List<ArmorState> equipped = getArmorStates(handler);
-        int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
-        if (isHelmetLastPieceBelowTarget(equipped)) target = Math.min(target, helmetLastPieceTriggerRaw);
+        int computedTarget = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
+        if (isHelmetLastPieceBelowTarget(equipped)) computedTarget = Math.min(computedTarget, helmetLastPieceTriggerRaw);
+        final int target = computedTarget;
         for (ArmorState state : equipped) {
             if (!state.binding && state.remainingRaw >= target) return true;
         }
@@ -341,8 +342,9 @@ public class AutoMend {
         queueOffhandSwapIfNeeded(handler, client, isHoldingXpBottle(client));
         if (!moveQueue.isEmpty()) return;
         boolean holdingXp = isHoldingXpBottle(client);
-        int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
-        if (isHelmetLastPieceBelowTarget(equipped)) target = Math.min(target, helmetLastPieceTriggerRaw);
+        int computedTarget = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
+        if (isHelmetLastPieceBelowTarget(equipped)) computedTarget = Math.min(computedTarget, helmetLastPieceTriggerRaw);
+        final int target = computedTarget;
         boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
         boolean equippedSetAtTarget = areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw);
 
