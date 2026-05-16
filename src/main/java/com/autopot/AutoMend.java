@@ -198,22 +198,36 @@ public class AutoMend {
         int bottleCount = countXpBottles(client);
         boolean holdingXp = isHoldingXpBottle(client);
         int target = phaseTargetRaw + phaseTargetHysteresisRaw;
+        boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
 
-        // Never unequip armor unless actively holding XP bottles.
-        if (holdingXp) {
-            ArmorState aboveTarget = equipped.stream()
+        // While mending, strip every equipped piece that has already reached target to avoid XP waste.
+        if (holdingXp && !fullSetAtTarget && allowDirectionChange(true)) {
+            List<ArmorState> toUnequip = equipped.stream()
                     .filter(a -> !a.binding)
                     .filter(a -> a.remainingRaw >= target)
-                    .max(Comparator.comparingInt(ArmorState::remainingRaw))
-                    .orElse(null);
-            if (aboveTarget != null && allowDirectionChange(true)) {
-                Slot destination = findFirstOpenStorageSlot(handler);
-                if (destination != null) {
-                    reservedDestinations.add(destination.id);
-                    moveQueue.addLast(new SlotMove(aboveTarget.slotId, destination.id, worldTick, "unequip_at_target"));
+                    .sorted(Comparator.comparingInt(ArmorState::remainingRaw).reversed())
+                    .toList();
+
+            if (!toUnequip.isEmpty()) {
+                List<Slot> openSlots = new ArrayList<>();
+                for (Slot slot : handler.slots) {
+                    if (!isStorageInventorySlot(slot) || reservedDestinations.contains(slot.id) || slot.hasStack()) continue;
+                    openSlots.add(slot);
+                }
+
+                int moved = 0;
+                for (int i = 0; i < toUnequip.size() && i < openSlots.size(); i++) {
+                    ArmorState src = toUnequip.get(i);
+                    Slot dst = openSlots.get(i);
+                    reservedDestinations.add(dst.id);
+                    moveQueue.addLast(new SlotMove(src.slotId, dst.id, worldTick, "unequip_at_target_batch"));
+                    moved++;
+                }
+
+                if (moved > 0) {
                     lastDirectionUnequip = true;
                     lastReverseTick = worldTick;
-                    debug("queued target-cap unequip " + aboveTarget.slotId + "->" + destination.id + " target=" + target + " bottles=" + bottleCount);
+                    debug("queued batch unequip count=" + moved + " target=" + target + " bottles=" + bottleCount);
                     return;
                 }
             }
@@ -222,10 +236,8 @@ public class AutoMend {
         EmptyArmorSlot emptyArmor = findEmptyArmorSlotWithType(handler);
         if (emptyArmor == null) return;
 
-        // Only re-equip when full 400-set phase is finished OR player is no longer holding XP.
-        boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
-        boolean shouldReequip = !holdingXp || fullSetAtTarget;
-        if (!shouldReequip || !allowDirectionChange(false)) return;
+        // Re-equip only when full set has reached target. If still holding XP and not complete, stay unequipped.
+        if (!fullSetAtTarget || !allowDirectionChange(false)) return;
 
         ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
         if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
@@ -235,7 +247,7 @@ public class AutoMend {
                 moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
                 lastDirectionUnequip = false;
                 lastReverseTick = worldTick;
-                debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget);
+                debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget + " holdingXp=" + holdingXp);
             }
         }
     }
