@@ -160,7 +160,7 @@ public class AutoMend {
         if (swapCooldownTicks > 0) { swapCooldownTicks--; return; }
         if (actionDelayTicks > 0) { actionDelayTicks--; return; }
 
-        if (!moveQueue.isEmpty()) {
+        if (inFlightMove != null || !moveQueue.isEmpty()) {
             executeNext(handler, client);
             return;
         }
