@@ -75,7 +75,7 @@ public class AutoMend {
 
     private static final int CONFIRM_TIMEOUT = 24;
     private static final int RECALC_INTERVAL = 4;
-    private static final int DECISION_INTERVAL = 3;
+    private static final int DECISION_INTERVAL = 1;
     private static final int MIN_REVERSE_TICKS = 30;
     private static final double REEQUIP_DIFF_PERCENT = 8.0d;
     private static final boolean FORCE_SIMPLE_HELMET_TEST = false;
@@ -129,6 +129,13 @@ public class AutoMend {
         if (FORCE_SIMPLE_HELMET_TEST) {
             runSimpleHelmetUnequipTest(handler, client);
             return;
+        }
+
+        if (isHoldingXpBottle(client) && hasCappedEquippedArmor(handler)) {
+            client.options.useKey.setPressed(false);
+            // force immediate reaction once any piece crosses cap
+            swapCooldownTicks = 0;
+            actionDelayTicks = 0;
         }
 
         // Continue in-flight pickup/place even if revision ack is pending.
@@ -191,6 +198,14 @@ public class AutoMend {
         }
     }
 
+    private boolean hasCappedEquippedArmor(ScreenHandler handler) {
+        int target = phaseTargetRaw + phaseTargetHysteresisRaw;
+        for (ArmorState state : getArmorStates(handler)) {
+            if (!state.binding && state.remainingRaw >= target) return true;
+        }
+        return false;
+    }
+
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
         List<ArmorState> equipped = getArmorStates(handler);
         if (equipped.isEmpty()) return;
@@ -239,22 +254,31 @@ public class AutoMend {
             }
         }
 
-        EmptyArmorSlot emptyArmor = findEmptyArmorSlotWithType(handler);
-        if (emptyArmor == null) return;
-
-        // Re-equip only when full set has reached target. If still holding XP and not complete, stay unequipped.
         if (!fullSetAtTarget) return;
 
-        ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
-        if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
+        List<EmptyArmorSlot> empties = new ArrayList<>();
+        for (Slot slot : handler.slots) {
+            if (!isArmorInventorySlot(slot) || slot.hasStack()) continue;
+            EquipmentSlot eq = equipmentSlotFromArmorInventoryIndex(slot.getIndex());
+            if (eq != null) empties.add(new EmptyArmorSlot(slot, eq));
+        }
+        if (empties.isEmpty()) return;
+
+        int reequipped = 0;
+        for (EmptyArmorSlot emptyArmor : empties) {
+            ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
+            if (bestStorage == null || reservedDestinations.contains(emptyArmor.slot.id)) continue;
             int targetRaw = getEqualizeTargetRaw(handler, equipped, emptyArmor.eqSlot);
             int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
             if (!holdingXp || diff <= reEquipToleranceRaw || bestStorage.remainingRaw >= phaseTargetRaw) {
-                moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
-                lastDirectionUnequip = false;
-                lastReverseTick = worldTick;
-                debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget + " holdingXp=" + holdingXp);
+                moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized_batch"));
+                reequipped++;
             }
+        }
+        if (reequipped > 0) {
+            lastDirectionUnequip = false;
+            lastReverseTick = worldTick;
+            debug("queued batch re-equip count=" + reequipped + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget);
         }
     }
 
@@ -288,7 +312,7 @@ public class AutoMend {
         if (!openedInventoryForMove && client.currentScreen == null && client.player != null) {
             client.setScreen(new InventoryScreen(client.player));
             openedInventoryForMove = true;
-            actionDelayTicks = 1;
+            actionDelayTicks = 1; // ~50ms at 20 TPS
             return;
         }
 
@@ -307,7 +331,7 @@ public class AutoMend {
             click(handler.syncId, move.fromSlotId, client);
             inFlightPickedUp = true;
             pendingConfirmTicks = 1;
-            actionDelayTicks = 1;
+            actionDelayTicks = 1; // ~50ms at 20 TPS
             return;
         }
 
@@ -343,6 +367,7 @@ public class AutoMend {
             MinecraftClient mc = MinecraftClient.getInstance();
             if (mc != null) mc.setScreen(null);
             openedInventoryForMove = false;
+            actionDelayTicks = Math.max(actionDelayTicks, 1);
         }
     }
 
