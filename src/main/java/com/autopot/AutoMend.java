@@ -57,6 +57,8 @@ public class AutoMend {
     private boolean fastXpEnabled = true;
     private int fastXpSwitchRaw = 390;
     private int slowXpIntervalTicks = 3;
+    private int helmetLastPieceTriggerRaw = 395;
+    private boolean swapMendingOffhandToTotem = true;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -234,6 +236,7 @@ public class AutoMend {
 
     private boolean hasCappedEquippedArmor(ScreenHandler handler) {
         int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
+        if (isHelmetLastPieceBelowTarget(equipped)) target = Math.min(target, helmetLastPieceTriggerRaw);
         for (ArmorState state : getArmorStates(handler)) {
             if (!state.binding && state.remainingRaw >= target) return true;
         }
@@ -264,13 +267,81 @@ public class AutoMend {
         }
     }
 
+    private ArmorState getEquippedArmorByType(List<ArmorState> equipped, EquipmentSlot type) {
+        for (ArmorState a : equipped) if (a.eqSlot == type) return a;
+        return null;
+    }
+
+    private boolean isHelmetLastPieceBelowTarget(List<ArmorState> equipped) {
+        ArmorState helmet = getEquippedArmorByType(equipped, EquipmentSlot.HEAD);
+        if (helmet == null) return false;
+        boolean othersAtTarget = true;
+        for (ArmorState a : equipped) {
+            if (a.eqSlot == EquipmentSlot.HEAD) continue;
+            if (a.remainingRaw < phaseTargetRaw) { othersAtTarget = false; break; }
+        }
+        return othersAtTarget && helmet.remainingRaw < phaseTargetRaw;
+    }
+
+    private Slot findFirstTotemSlot(ScreenHandler handler) {
+        for (Slot slot : handler.slots) {
+            if (!isStorageInventorySlot(slot) || !slot.hasStack()) continue;
+            if (slot.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING)) return slot;
+        }
+        return null;
+    }
+
+    private Slot findBestMendingOffhandItem(ScreenHandler handler) {
+        Slot best = null;
+        int bestRaw = -1;
+        for (Slot slot : handler.slots) {
+            if (!isStorageInventorySlot(slot) || !slot.hasStack()) continue;
+            ItemStack st = slot.getStack();
+            if (!hasMending(st) || !st.isDamageable()) continue;
+            int raw = getRemainingDurability(st);
+            if (raw > bestRaw) { bestRaw = raw; best = slot; }
+        }
+        return best;
+    }
+
+    private boolean hasMending(ItemStack stack) {
+        return stack.getEnchantments().toString().contains("mending");
+    }
+
+    private void queueOffhandSwapIfNeeded(ScreenHandler handler, MinecraftClient client, boolean holdingXp) {
+        Slot offhand = findArmorSlotByInventoryIndex(handler, 40);
+        if (offhand == null) return;
+        boolean holdingSword = client.player.getMainHandStack().getItem().toString().toLowerCase(java.util.Locale.ROOT).contains("sword");
+
+        if (holdingXp && swapMendingOffhandToTotem && offhand.hasStack() && hasMending(offhand.getStack()) && !offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING)) {
+            Slot totem = findFirstTotemSlot(handler);
+            if (totem != null) {
+                moveQueue.addLast(new SlotMove(totem.id, offhand.id, worldTick, "offhand_totem"));
+                return;
+            }
+            Slot empty = findFirstOpenStorageSlot(handler);
+            if (empty != null) {
+                moveQueue.addLast(new SlotMove(offhand.id, empty.id, worldTick, "offhand_clear_no_totem"));
+                return;
+            }
+        }
+
+        if ((!holdingXp || holdingSword) && (offhand.hasStack() && offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING) || (offhand.hasStack() && !hasMending(offhand.getStack())))) {
+            Slot bestMending = findBestMendingOffhandItem(handler);
+            if (bestMending != null) moveQueue.addLast(new SlotMove(bestMending.id, offhand.id, worldTick, "offhand_restore_mending"));
+        }
+    }
+
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
         List<ArmorState> equipped = getArmorStates(handler);
         if (equipped.isEmpty()) return;
 
         int bottleCount = countXpBottles(client);
+        queueOffhandSwapIfNeeded(handler, client, isHoldingXpBottle(client));
+        if (!moveQueue.isEmpty()) return;
         boolean holdingXp = isHoldingXpBottle(client);
         int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
+        if (isHelmetLastPieceBelowTarget(equipped)) target = Math.min(target, helmetLastPieceTriggerRaw);
         boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
         boolean equippedSetAtTarget = areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw);
 
@@ -313,7 +384,7 @@ public class AutoMend {
             }
         }
 
-        if (!fullSetAtTarget || equippedSetAtTarget) return;
+        if ((!fullSetAtTarget && holdingXp) || equippedSetAtTarget) return;
 
         List<EmptyArmorSlot> empties = new ArrayList<>();
         for (Slot slot : handler.slots) {
@@ -694,6 +765,8 @@ public class AutoMend {
             fastXpEnabled = Boolean.parseBoolean(p.getProperty("fastXpEnabled", "true"));
             fastXpSwitchRaw = Integer.parseInt(p.getProperty("fastXpSwitchRaw", "390"));
             slowXpIntervalTicks = Integer.parseInt(p.getProperty("slowXpIntervalTicks", "3"));
+            helmetLastPieceTriggerRaw = Integer.parseInt(p.getProperty("helmetLastPieceTriggerRaw", "395"));
+            swapMendingOffhandToTotem = Boolean.parseBoolean(p.getProperty("swapMendingOffhandToTotem", "true"));
         } catch (Exception ignored) {}
     }
 
@@ -722,6 +795,8 @@ public class AutoMend {
             p.setProperty("fastXpEnabled", Boolean.toString(fastXpEnabled));
             p.setProperty("fastXpSwitchRaw", Integer.toString(fastXpSwitchRaw));
             p.setProperty("slowXpIntervalTicks", Integer.toString(slowXpIntervalTicks));
+            p.setProperty("helmetLastPieceTriggerRaw", Integer.toString(helmetLastPieceTriggerRaw));
+            p.setProperty("swapMendingOffhandToTotem", Boolean.toString(swapMendingOffhandToTotem));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
