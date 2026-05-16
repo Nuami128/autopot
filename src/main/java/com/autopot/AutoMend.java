@@ -54,9 +54,9 @@ public class AutoMend {
     private int lowBottleCountThreshold = 40;
     private int phaseTargetHysteresisRaw = 0;
     private int capTriggerOffsetRaw = 3;
-    private boolean fastXpEnabled = true;
-    private int fastXpSwitchRaw = 390;
-    private int slowXpIntervalTicks = 3;
+    private boolean
+    private int
+    private int
     private int helmetLastPieceTriggerRaw = 395;
     private boolean swapMendingOffhandToTotem = true;
 
@@ -236,7 +236,7 @@ public class AutoMend {
 
     private boolean hasCappedEquippedArmor(ScreenHandler handler) {
         List<ArmorState> equipped = getArmorStates(handler);
-        int computedTarget = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
+        int computedTarget = phaseTargetRaw;
         if (isHelmetLastPieceBelowTarget(equipped)) computedTarget = Math.min(computedTarget, helmetLastPieceTriggerRaw);
         final int target = computedTarget;
         for (ArmorState state : equipped) {
@@ -246,27 +246,7 @@ public class AutoMend {
     }
 
     private void driveXpUsePattern(ScreenHandler handler, MinecraftClient client, boolean holdingXp) {
-        if (!fastXpEnabled || !holdingXp) return;
-        if (inFlightMove != null || !moveQueue.isEmpty() || openedInventoryForMove) {
-            client.options.useKey.setPressed(false);
-            return;
-        }
-
-        int minRaw = getArmorStates(handler).stream().mapToInt(ArmorState::remainingRaw).min().orElse(phaseTargetRaw);
-        boolean cappedPresent = hasCappedEquippedArmor(handler);
-        if (cappedPresent) {
-            client.options.useKey.setPressed(false);
-            return;
-        }
-
-        if (minRaw < fastXpSwitchRaw) {
-            // fast phase
-            client.options.useKey.setPressed(true);
-        } else {
-            // slow phase near target to reduce overmend
-            int interval = Math.max(1, slowXpIntervalTicks);
-            client.options.useKey.setPressed((worldTick % interval) == 0);
-        }
+        // Auto XP disabled by request: user controls right-click manually.
     }
 
     private ArmorState getEquippedArmorByType(List<ArmorState> equipped, EquipmentSlot type) {
@@ -313,8 +293,6 @@ public class AutoMend {
     private void queueOffhandSwapIfNeeded(ScreenHandler handler, MinecraftClient client, boolean holdingXp) {
         Slot offhand = findArmorSlotByInventoryIndex(handler, 40);
         if (offhand == null) return;
-        boolean holdingSword = client.player.getMainHandStack().getItem().toString().toLowerCase(java.util.Locale.ROOT).contains("sword");
-
         if (holdingXp && swapMendingOffhandToTotem && offhand.hasStack() && hasMending(offhand.getStack()) && !offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING)) {
             Slot totem = findFirstTotemSlot(handler);
             if (totem != null) {
@@ -328,7 +306,7 @@ public class AutoMend {
             }
         }
 
-        if ((!holdingXp || holdingSword) && (offhand.hasStack() && offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING) || (offhand.hasStack() && !hasMending(offhand.getStack())))) {
+        if (!holdingXp && (offhand.hasStack() && offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING) || (offhand.hasStack() && !hasMending(offhand.getStack())))) {
             Slot bestMending = findBestMendingOffhandItem(handler);
             if (bestMending != null) moveQueue.addLast(new SlotMove(bestMending.id, offhand.id, worldTick, "offhand_restore_mending"));
         }
@@ -342,7 +320,7 @@ public class AutoMend {
         queueOffhandSwapIfNeeded(handler, client, isHoldingXpBottle(client));
         if (!moveQueue.isEmpty()) return;
         boolean holdingXp = isHoldingXpBottle(client);
-        int computedTarget = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
+        int computedTarget = phaseTargetRaw;
         if (isHelmetLastPieceBelowTarget(equipped)) computedTarget = Math.min(computedTarget, helmetLastPieceTriggerRaw);
         final int target = computedTarget;
         boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
@@ -353,6 +331,9 @@ public class AutoMend {
             client.options.useKey.setPressed(false);
             debug("prevent-splash active: waiting to strip capped piece at target=" + target);
         }
+
+        // If all pieces are already at target, keep armor on and do not strip while holding XP.
+        if (holdingXp && fullSetAtTarget) return;
 
         // While mending, strip every equipped piece that has already reached target to avoid XP waste.
         if (holdingXp && !fullSetAtTarget && allowDirectionChange(true)) {
@@ -387,7 +368,8 @@ public class AutoMend {
             }
         }
 
-        if ((!fullSetAtTarget && holdingXp) || equippedSetAtTarget) return;
+        boolean helmetLastDone = isHelmetLastPieceBelowTarget(equipped) && getEquippedArmorByType(equipped, EquipmentSlot.HEAD) != null && getEquippedArmorByType(equipped, EquipmentSlot.HEAD).remainingRaw >= helmetLastPieceTriggerRaw;
+        if (((!fullSetAtTarget && !helmetLastDone) && holdingXp) || equippedSetAtTarget) return;
 
         List<EmptyArmorSlot> empties = new ArrayList<>();
         for (Slot slot : handler.slots) {
@@ -765,9 +747,6 @@ public class AutoMend {
             lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
             phaseTargetHysteresisRaw = Integer.parseInt(p.getProperty("phaseTargetHysteresisRaw", "0"));
             capTriggerOffsetRaw = Integer.parseInt(p.getProperty("capTriggerOffsetRaw", "3"));
-            fastXpEnabled = Boolean.parseBoolean(p.getProperty("fastXpEnabled", "true"));
-            fastXpSwitchRaw = Integer.parseInt(p.getProperty("fastXpSwitchRaw", "390"));
-            slowXpIntervalTicks = Integer.parseInt(p.getProperty("slowXpIntervalTicks", "3"));
             helmetLastPieceTriggerRaw = Integer.parseInt(p.getProperty("helmetLastPieceTriggerRaw", "395"));
             swapMendingOffhandToTotem = Boolean.parseBoolean(p.getProperty("swapMendingOffhandToTotem", "true"));
         } catch (Exception ignored) {}
@@ -795,9 +774,6 @@ public class AutoMend {
             p.setProperty("lowBottleCountThreshold", Integer.toString(lowBottleCountThreshold));
             p.setProperty("phaseTargetHysteresisRaw", Integer.toString(phaseTargetHysteresisRaw));
             p.setProperty("capTriggerOffsetRaw", Integer.toString(capTriggerOffsetRaw));
-            p.setProperty("fastXpEnabled", Boolean.toString(fastXpEnabled));
-            p.setProperty("fastXpSwitchRaw", Integer.toString(fastXpSwitchRaw));
-            p.setProperty("slowXpIntervalTicks", Integer.toString(slowXpIntervalTicks));
             p.setProperty("helmetLastPieceTriggerRaw", Integer.toString(helmetLastPieceTriggerRaw));
             p.setProperty("swapMendingOffhandToTotem", Boolean.toString(swapMendingOffhandToTotem));
             Files.createDirectories(configPath.getParent());
