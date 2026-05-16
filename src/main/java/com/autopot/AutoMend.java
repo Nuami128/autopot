@@ -54,6 +54,9 @@ public class AutoMend {
     private int lowBottleCountThreshold = 40;
     private int phaseTargetHysteresisRaw = 0;
     private int capTriggerOffsetRaw = 3;
+    private boolean fastXpEnabled = true;
+    private int fastXpSwitchRaw = 390;
+    private int slowXpIntervalTicks = 3;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -133,6 +136,8 @@ public class AutoMend {
 
         ScreenHandler handler = client.player.currentScreenHandler;
         if (!(handler instanceof PlayerScreenHandler)) return;
+
+        driveXpUsePattern(handler, client, holdingXp);
 
         if (FORCE_SIMPLE_HELMET_TEST) {
             runSimpleHelmetUnequipTest(handler, client);
@@ -235,6 +240,30 @@ public class AutoMend {
         return false;
     }
 
+    private void driveXpUsePattern(ScreenHandler handler, MinecraftClient client, boolean holdingXp) {
+        if (!fastXpEnabled || !holdingXp) return;
+        if (inFlightMove != null || !moveQueue.isEmpty() || openedInventoryForMove) {
+            client.options.useKey.setPressed(false);
+            return;
+        }
+
+        int minRaw = getArmorStates(handler).stream().mapToInt(ArmorState::remainingRaw).min().orElse(phaseTargetRaw);
+        boolean cappedPresent = hasCappedEquippedArmor(handler);
+        if (cappedPresent) {
+            client.options.useKey.setPressed(false);
+            return;
+        }
+
+        if (minRaw < fastXpSwitchRaw) {
+            // fast phase
+            client.options.useKey.setPressed(true);
+        } else {
+            // slow phase near target to reduce overmend
+            int interval = Math.max(1, slowXpIntervalTicks);
+            client.options.useKey.setPressed((worldTick % interval) == 0);
+        }
+    }
+
     private void queueSmartMove(ScreenHandler handler, MinecraftClient client) {
         List<ArmorState> equipped = getArmorStates(handler);
         if (equipped.isEmpty()) return;
@@ -298,9 +327,7 @@ public class AutoMend {
         for (EmptyArmorSlot emptyArmor : empties) {
             ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
             if (bestStorage == null || reservedDestinations.contains(emptyArmor.slot.id)) continue;
-            int targetRaw = getEqualizeTargetRaw(handler, equipped, emptyArmor.eqSlot);
-            int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
-            if (!holdingXp || diff <= reEquipToleranceRaw || bestStorage.remainingRaw >= phaseTargetRaw) {
+            if (bestStorage.remainingRaw >= phaseTargetRaw || !holdingXp) {
                 moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized_batch"));
                 reequipped++;
             }
@@ -664,6 +691,9 @@ public class AutoMend {
             lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
             phaseTargetHysteresisRaw = Integer.parseInt(p.getProperty("phaseTargetHysteresisRaw", "0"));
             capTriggerOffsetRaw = Integer.parseInt(p.getProperty("capTriggerOffsetRaw", "3"));
+            fastXpEnabled = Boolean.parseBoolean(p.getProperty("fastXpEnabled", "true"));
+            fastXpSwitchRaw = Integer.parseInt(p.getProperty("fastXpSwitchRaw", "390"));
+            slowXpIntervalTicks = Integer.parseInt(p.getProperty("slowXpIntervalTicks", "3"));
         } catch (Exception ignored) {}
     }
 
@@ -689,6 +719,9 @@ public class AutoMend {
             p.setProperty("lowBottleCountThreshold", Integer.toString(lowBottleCountThreshold));
             p.setProperty("phaseTargetHysteresisRaw", Integer.toString(phaseTargetHysteresisRaw));
             p.setProperty("capTriggerOffsetRaw", Integer.toString(capTriggerOffsetRaw));
+            p.setProperty("fastXpEnabled", Boolean.toString(fastXpEnabled));
+            p.setProperty("fastXpSwitchRaw", Integer.toString(fastXpSwitchRaw));
+            p.setProperty("slowXpIntervalTicks", Integer.toString(slowXpIntervalTicks));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
