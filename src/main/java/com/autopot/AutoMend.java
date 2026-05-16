@@ -235,9 +235,10 @@ public class AutoMend {
     }
 
     private boolean hasCappedEquippedArmor(ScreenHandler handler) {
+        List<ArmorState> equipped = getArmorStates(handler);
         int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
         if (isHelmetLastPieceBelowTarget(equipped)) target = Math.min(target, helmetLastPieceTriggerRaw);
-        for (ArmorState state : getArmorStates(handler)) {
+        for (ArmorState state : equipped) {
             if (!state.binding && state.remainingRaw >= target) return true;
         }
         return false;
