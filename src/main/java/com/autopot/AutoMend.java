@@ -290,7 +290,7 @@ public class AutoMend {
     private void queueOffhandSwapIfNeeded(ScreenHandler handler, MinecraftClient client, boolean holdingXp) {
         Slot offhand = findArmorSlotByInventoryIndex(handler, 40);
         if (offhand == null) return;
-        if (holdingXp && swapMendingOffhandToTotem && offhand.hasStack() && hasMending(offhand.getStack()) && !offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING)) {
+        if (holdingXp && swapMendingOffhandToTotem && offhand.hasStack() && offhand.getStack().isOf(net.minecraft.item.Items.SHIELD) && hasMending(offhand.getStack()) && !offhand.getStack().isOf(net.minecraft.item.Items.TOTEM_OF_UNDYING)) {
             Slot totem = findFirstTotemSlot(handler);
             if (totem != null) {
                 moveQueue.addLast(new SlotMove(totem.id, offhand.id, worldTick, "offhand_totem"));
@@ -313,61 +313,64 @@ public class AutoMend {
         List<ArmorState> equipped = getArmorStates(handler);
         if (equipped.isEmpty()) return;
 
-        int bottleCount = countXpBottles(client);
-        queueOffhandSwapIfNeeded(handler, client, isHoldingXpBottle(client));
-        if (!moveQueue.isEmpty()) return;
         boolean holdingXp = isHoldingXpBottle(client);
-        int computedTarget = phaseTargetRaw;
-        if (isHelmetLastPieceBelowTarget(equipped)) computedTarget = Math.min(computedTarget, helmetLastPieceTriggerRaw);
-        final int target = computedTarget;
-        boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
-        boolean equippedSetAtTarget = areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw);
+        queueOffhandSwapIfNeeded(handler, client, holdingXp);
+        if (!moveQueue.isEmpty()) return;
 
-        boolean hasCappedEquippedPiece = equipped.stream().anyMatch(a -> !a.binding && a.remainingRaw >= target);
-        if (holdingXp && hasCappedEquippedPiece) {
-            client.options.useKey.setPressed(false);
-            debug("prevent-splash active: waiting to strip capped piece at target=" + target);
+        boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
+
+        // If not mending, prioritize putting armor back on immediately.
+        if (!holdingXp) {
+            queueBatchReequip(handler);
+            return;
         }
 
-        // If all pieces are already at target, keep armor on and do not strip while holding XP.
-        if (holdingXp && fullSetAtTarget) return;
+        // If all pieces are at target, keep armor on and stop extra overmending.
+        if (fullSetAtTarget) {
+            client.options.useKey.setPressed(false);
+            return;
+        }
+    }
 
-        // While mending, strip every equipped piece that has already reached target to avoid XP waste.
-        if (holdingXp && !fullSetAtTarget && allowDirectionChange(true)) {
-            List<ArmorState> toUnequip = equipped.stream()
-                    .filter(a -> !a.binding)
-                    .filter(a -> a.remainingRaw >= target)
-                    .sorted(Comparator.comparingInt(ArmorState::remainingRaw).reversed())
-                    .toList();
+        // While mending, strip capped pieces. Helmet gets special 395 rule only when it's the last lagging piece.
+        boolean helmetIsLastLagging = isHelmetLastPieceBelowTarget(equipped);
+        List<ArmorState> toUnequip = equipped.stream()
+                .filter(a -> !a.binding)
+                .filter(a -> {
+                    int threshold = phaseTargetRaw;
+                    if (a.eqSlot == EquipmentSlot.HEAD && helmetIsLastLagging) threshold = helmetLastPieceTriggerRaw;
+                    return a.remainingRaw >= threshold;
+                })
+                .sorted(Comparator.comparingInt(ArmorState::remainingRaw).reversed())
+                .toList();
 
-            if (!toUnequip.isEmpty()) {
-                List<Slot> openSlots = new ArrayList<>();
-                for (Slot slot : handler.slots) {
-                    if (!isStorageInventorySlot(slot) || reservedDestinations.contains(slot.id) || slot.hasStack()) continue;
-                    openSlots.add(slot);
-                }
+        if (!toUnequip.isEmpty() && allowDirectionChange(true)) {
+            List<Slot> openSlots = new ArrayList<>();
+            for (Slot slot : handler.slots) {
+                if (!isStorageInventorySlot(slot) || reservedDestinations.contains(slot.id) || slot.hasStack()) continue;
+                openSlots.add(slot);
+            }
 
-                int moved = 0;
-                for (int i = 0; i < toUnequip.size() && i < openSlots.size(); i++) {
-                    ArmorState src = toUnequip.get(i);
-                    Slot dst = openSlots.get(i);
-                    reservedDestinations.add(dst.id);
-                    moveQueue.addLast(new SlotMove(src.slotId, dst.id, worldTick, "unequip_at_target_batch"));
-                    moved++;
-                }
-
-                if (moved > 0) {
-                    lastDirectionUnequip = true;
-                    lastReverseTick = worldTick;
-                    debug("queued batch unequip count=" + moved + " target=" + target + " bottles=" + bottleCount);
-                    return;
-                }
+            int moved = 0;
+            for (int i = 0; i < toUnequip.size() && i < openSlots.size(); i++) {
+                ArmorState src = toUnequip.get(i);
+                Slot dst = openSlots.get(i);
+                reservedDestinations.add(dst.id);
+                moveQueue.addLast(new SlotMove(src.slotId, dst.id, worldTick, "unequip_at_target_batch"));
+                moved++;
+            }
+            if (moved > 0) {
+                lastDirectionUnequip = true;
+                lastReverseTick = worldTick;
+                return;
             }
         }
 
-        boolean helmetLastDone = isHelmetLastPieceBelowTarget(equipped) && getEquippedArmorByType(equipped, EquipmentSlot.HEAD) != null && getEquippedArmorByType(equipped, EquipmentSlot.HEAD).remainingRaw >= helmetLastPieceTriggerRaw;
-        if (((!fullSetAtTarget && !helmetLastDone) && holdingXp) || equippedSetAtTarget) return;
+        // If there are empty armor slots during mending and we already have target-ready backups, fill them in one batch.
+        if (fullSetAtTarget) queueBatchReequip(handler);
+    }
 
+    private void queueBatchReequip(ScreenHandler handler) {
         List<EmptyArmorSlot> empties = new ArrayList<>();
         for (Slot slot : handler.slots) {
             if (!isArmorInventorySlot(slot) || slot.hasStack()) continue;
@@ -380,16 +383,14 @@ public class AutoMend {
         for (EmptyArmorSlot emptyArmor : empties) {
             ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
             if (bestStorage == null || reservedDestinations.contains(emptyArmor.slot.id)) continue;
-            if (bestStorage.remainingRaw >= phaseTargetRaw || !holdingXp) {
-                moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized_batch"));
-                reequipped++;
-            }
+            moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_batch"));
+            reequipped++;
         }
         if (reequipped > 0) {
             lastDirectionUnequip = false;
             lastReverseTick = worldTick;
-            debug("queued batch re-equip count=" + reequipped + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget);
         }
+        return best;
     }
 
     private boolean areAllEquippedArmorAtOrAboveTarget(ScreenHandler handler, int targetRaw) {
