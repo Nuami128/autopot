@@ -3,6 +3,7 @@ package com.autopot;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.gui.screen.ingame.InventoryScreen;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.EquippableComponent;
 import net.minecraft.entity.EquipmentSlot;
@@ -160,7 +161,7 @@ public class AutoMend {
         if (swapCooldownTicks > 0) { swapCooldownTicks--; return; }
         if (actionDelayTicks > 0) { actionDelayTicks--; return; }
 
-        if (!moveQueue.isEmpty()) {
+        if (inFlightMove != null || !moveQueue.isEmpty()) {
             executeNext(handler, client);
             return;
         }
