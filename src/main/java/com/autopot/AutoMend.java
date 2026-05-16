@@ -53,6 +53,7 @@ public class AutoMend {
     private int phaseTargetRaw = 400;
     private int lowBottleCountThreshold = 40;
     private int phaseTargetHysteresisRaw = 0;
+    private int capTriggerOffsetRaw = 1;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -210,7 +211,7 @@ public class AutoMend {
     }
 
     private boolean hasCappedEquippedArmor(ScreenHandler handler) {
-        int target = phaseTargetRaw;
+        int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
         for (ArmorState state : getArmorStates(handler)) {
             if (!state.binding && state.remainingRaw >= target) return true;
         }
@@ -223,7 +224,7 @@ public class AutoMend {
 
         int bottleCount = countXpBottles(client);
         boolean holdingXp = isHoldingXpBottle(client);
-        int target = phaseTargetRaw;
+        int target = Math.max(1, phaseTargetRaw - capTriggerOffsetRaw);
         boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
         boolean equippedSetAtTarget = areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw);
 
@@ -330,14 +331,6 @@ public class AutoMend {
             if (inFlightMove == null) return;
         }
 
-        if (!openedInventoryForMove && client.currentScreen == null && client.player != null) {
-            client.setScreen(new InventoryScreen(client.player));
-            openedInventoryForMove = true;
-            inventorySessionActive = true;
-            actionDelayTicks = 1; // ~50ms at 20 TPS
-            return;
-        }
-
         SlotMove move = inFlightMove;
         Slot from = getSlotById(handler, move.fromSlotId);
         Slot to = getSlotById(handler, move.toSlotId);
@@ -385,13 +378,8 @@ public class AutoMend {
 
         inFlightMove = null;
         inFlightPickedUp = false;
-        if (openedInventoryForMove && moveQueue.isEmpty() && inFlightMove == null) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc != null) mc.setScreen(null);
-            openedInventoryForMove = false;
-            inventorySessionActive = false;
-            actionDelayTicks = Math.max(actionDelayTicks, 1);
-        }
+        openedInventoryForMove = false;
+        inventorySessionActive = false;
     }
 
     private List<ArmorState> getArmorStates(ScreenHandler handler) {
@@ -622,11 +610,7 @@ public class AutoMend {
         inFlightMove = null;
         inFlightPickedUp = false;
         inventorySessionActive = false;
-        if (openedInventoryForMove) {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            if (mc != null) mc.setScreen(null);
-            openedInventoryForMove = false;
-        }
+        openedInventoryForMove = false;
     }
 
     private void resetRuntimeState() {
@@ -662,6 +646,7 @@ public class AutoMend {
             phaseTargetRaw = Integer.parseInt(p.getProperty("phaseTargetRaw", "400"));
             lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
             phaseTargetHysteresisRaw = Integer.parseInt(p.getProperty("phaseTargetHysteresisRaw", "0"));
+            capTriggerOffsetRaw = Integer.parseInt(p.getProperty("capTriggerOffsetRaw", "1"));
         } catch (Exception ignored) {}
     }
 
@@ -686,6 +671,7 @@ public class AutoMend {
             p.setProperty("phaseTargetRaw", Integer.toString(phaseTargetRaw));
             p.setProperty("lowBottleCountThreshold", Integer.toString(lowBottleCountThreshold));
             p.setProperty("phaseTargetHysteresisRaw", Integer.toString(phaseTargetHysteresisRaw));
+            p.setProperty("capTriggerOffsetRaw", Integer.toString(capTriggerOffsetRaw));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
