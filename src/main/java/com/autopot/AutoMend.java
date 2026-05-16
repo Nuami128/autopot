@@ -330,7 +330,6 @@ public class AutoMend {
             client.options.useKey.setPressed(false);
             return;
         }
-    }
 
         // While mending, strip capped pieces. Helmet gets special 395 rule only when it's the last lagging piece.
         boolean helmetIsLastLagging = isHelmetLastPieceBelowTarget(equipped);
@@ -390,7 +389,6 @@ public class AutoMend {
             lastDirectionUnequip = false;
             lastReverseTick = worldTick;
         }
-        return best;
     }
 
     private boolean areAllEquippedArmorAtOrAboveTarget(ScreenHandler handler, int targetRaw) {
