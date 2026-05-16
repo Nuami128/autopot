@@ -52,6 +52,7 @@ public class AutoMend {
     private int reEquipToleranceRaw = 2;
     private int phaseTargetRaw = 400;
     private int lowBottleCountThreshold = 40;
+    private int phaseTargetHysteresisRaw = 0;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -196,13 +197,13 @@ public class AutoMend {
 
         int bottleCount = countXpBottles(client);
         boolean holdingXp = isHoldingXpBottle(client);
-        boolean lowXpPhase = bottleCount <= lowBottleCountThreshold;
+        int target = phaseTargetRaw + phaseTargetHysteresisRaw;
 
-        // Phase A: while actively mending, cap pieces at target raw (e.g. 400) by unequipping once they pass target.
+        // Never unequip armor unless actively holding XP bottles.
         if (holdingXp) {
             ArmorState aboveTarget = equipped.stream()
                     .filter(a -> !a.binding)
-                    .filter(a -> a.remainingRaw >= phaseTargetRaw)
+                    .filter(a -> a.remainingRaw >= target)
                     .max(Comparator.comparingInt(ArmorState::remainingRaw))
                     .orElse(null);
             if (aboveTarget != null && allowDirectionChange(true)) {
@@ -212,39 +213,29 @@ public class AutoMend {
                     moveQueue.addLast(new SlotMove(aboveTarget.slotId, destination.id, worldTick, "unequip_at_target"));
                     lastDirectionUnequip = true;
                     lastReverseTick = worldTick;
-                    debug("queued target-cap unequip " + aboveTarget.slotId + "->" + destination.id + " target=" + phaseTargetRaw + " bottles=" + bottleCount);
+                    debug("queued target-cap unequip " + aboveTarget.slotId + "->" + destination.id + " target=" + target + " bottles=" + bottleCount);
                     return;
                 }
             }
         }
 
-        // Phase B: if we have empty armor slots and we are still in bottle-rich phase,
-        // keep mending by re-equipping below-target pieces first.
         EmptyArmorSlot emptyArmor = findEmptyArmorSlotWithType(handler);
-        if (emptyArmor != null && allowDirectionChange(false) && !lowXpPhase) {
-            ArmorState candidate = findStorageArmorForSlotUnderTarget(handler, emptyArmor.eqSlot, phaseTargetRaw);
-            if (candidate != null) {
-                moveQueue.addLast(new SlotMove(candidate.slotId, emptyArmor.slot.id, worldTick, "reequip_under_target"));
+        if (emptyArmor == null) return;
+
+        // Only re-equip when full 400-set phase is finished OR player is no longer holding XP.
+        boolean allEquippedAtTarget = equipped.stream().allMatch(a -> a.remainingRaw >= phaseTargetRaw);
+        boolean shouldReequip = !holdingXp || allEquippedAtTarget;
+        if (!shouldReequip || !allowDirectionChange(false)) return;
+
+        ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
+        if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
+            int targetRaw = getEqualizeTargetRaw(handler, equipped, emptyArmor.eqSlot);
+            int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
+            if (!holdingXp || diff <= reEquipToleranceRaw || bestStorage.remainingRaw >= phaseTargetRaw) {
+                moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
                 lastDirectionUnequip = false;
                 lastReverseTick = worldTick;
-                debug("queued under-target re-equip " + candidate.slotId + "->" + emptyArmor.slot.id + " rem=" + candidate.remainingRaw);
-                return;
-            }
-        }
-
-        // Phase C (final mend with low bottles): equalize to the highest common raw value.
-        if (emptyArmor != null && allowDirectionChange(false)) {
-            ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
-            if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
-                int targetRaw = getEqualizeTargetRaw(handler, equipped, emptyArmor.eqSlot);
-                int diff = Math.abs(bestStorage.remainingRaw - targetRaw);
-                if (diff <= reEquipToleranceRaw || !holdingXp) {
-                    moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
-                    lastDirectionUnequip = false;
-                    lastReverseTick = worldTick;
-                    debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount);
-                    return;
-                }
+                debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount + " allAtTarget=" + allEquippedAtTarget);
             }
         }
     }
@@ -584,6 +575,7 @@ public class AutoMend {
             reEquipToleranceRaw = Integer.parseInt(p.getProperty("reEquipToleranceRaw", "2"));
             phaseTargetRaw = Integer.parseInt(p.getProperty("phaseTargetRaw", "400"));
             lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
+            phaseTargetHysteresisRaw = Integer.parseInt(p.getProperty("phaseTargetHysteresisRaw", "0"));
         } catch (Exception ignored) {}
     }
 
@@ -607,6 +599,7 @@ public class AutoMend {
             p.setProperty("reEquipToleranceRaw", Integer.toString(reEquipToleranceRaw));
             p.setProperty("phaseTargetRaw", Integer.toString(phaseTargetRaw));
             p.setProperty("lowBottleCountThreshold", Integer.toString(lowBottleCountThreshold));
+            p.setProperty("phaseTargetHysteresisRaw", Integer.toString(phaseTargetHysteresisRaw));
             Files.createDirectories(configPath.getParent());
             try (var out = Files.newOutputStream(configPath)) { p.store(out, "AutoMend settings"); }
         } catch (Exception ignored) {}
