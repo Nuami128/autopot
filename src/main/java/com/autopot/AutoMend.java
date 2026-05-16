@@ -54,9 +54,6 @@ public class AutoMend {
     private int lowBottleCountThreshold = 40;
     private int phaseTargetHysteresisRaw = 0;
     private int capTriggerOffsetRaw = 3;
-    private boolean
-    private int
-    private int
     private int helmetLastPieceTriggerRaw = 395;
     private boolean swapMendingOffhandToTotem = true;
 
