@@ -200,6 +200,12 @@ public class AutoMend {
         int target = phaseTargetRaw + phaseTargetHysteresisRaw;
         boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
 
+        boolean hasCappedEquippedPiece = equipped.stream().anyMatch(a -> !a.binding && a.remainingRaw >= target);
+        if (holdingXp && hasCappedEquippedPiece && moveQueue.isEmpty() && inFlightMove == null) {
+            client.options.useKey.setPressed(false);
+            debug("prevent-splash active: waiting to strip capped piece at target=" + target);
+        }
+
         // While mending, strip every equipped piece that has already reached target to avoid XP waste.
         if (holdingXp && !fullSetAtTarget && allowDirectionChange(true)) {
             List<ArmorState> toUnequip = equipped.stream()
@@ -237,7 +243,7 @@ public class AutoMend {
         if (emptyArmor == null) return;
 
         // Re-equip only when full set has reached target. If still holding XP and not complete, stay unequipped.
-        if (!fullSetAtTarget || !allowDirectionChange(false)) return;
+        if (!fullSetAtTarget) return;
 
         ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
         if (bestStorage != null && !reservedDestinations.contains(emptyArmor.slot.id)) {
