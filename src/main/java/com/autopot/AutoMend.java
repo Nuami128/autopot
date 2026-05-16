@@ -223,8 +223,8 @@ public class AutoMend {
         if (emptyArmor == null) return;
 
         // Only re-equip when full 400-set phase is finished OR player is no longer holding XP.
-        boolean allEquippedAtTarget = equipped.stream().allMatch(a -> a.remainingRaw >= phaseTargetRaw);
-        boolean shouldReequip = !holdingXp || allEquippedAtTarget;
+        boolean fullSetAtTarget = isFullSetAtOrAboveTarget(handler, phaseTargetRaw);
+        boolean shouldReequip = !holdingXp || fullSetAtTarget;
         if (!shouldReequip || !allowDirectionChange(false)) return;
 
         ArmorState bestStorage = findBestStorageArmorForSlot(handler, emptyArmor.eqSlot);
@@ -235,9 +235,28 @@ public class AutoMend {
                 moveQueue.addLast(new SlotMove(bestStorage.slotId, emptyArmor.slot.id, worldTick, "reequip_equalized"));
                 lastDirectionUnequip = false;
                 lastReverseTick = worldTick;
-                debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount + " allAtTarget=" + allEquippedAtTarget);
+                debug("queued final equalized re-equip " + bestStorage.slotId + "->" + emptyArmor.slot.id + " target=" + targetRaw + " diff=" + diff + " bottles=" + bottleCount + " fullSetAtTarget=" + fullSetAtTarget);
             }
         }
+    }
+
+    private boolean isFullSetAtOrAboveTarget(ScreenHandler handler, int targetRaw) {
+        for (EquipmentSlot slotType : new EquipmentSlot[]{EquipmentSlot.HEAD, EquipmentSlot.CHEST, EquipmentSlot.LEGS, EquipmentSlot.FEET}) {
+            int best = bestRawForType(handler, slotType);
+            if (best < targetRaw) return false;
+        }
+        return true;
+    }
+
+    private int bestRawForType(ScreenHandler handler, EquipmentSlot slotType) {
+        int best = -1;
+        for (Slot slot : handler.slots) {
+            if (!(slot.inventory instanceof PlayerInventory) || !slot.hasStack()) continue;
+            EquipmentSlot eq = getEquipmentSlot(slot.getStack());
+            if (eq != slotType) continue;
+            best = Math.max(best, getRemainingDurability(slot.getStack()));
+        }
+        return best;
     }
 
     private void executeNext(ScreenHandler handler, MinecraftClient client) {
