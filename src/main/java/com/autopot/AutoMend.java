@@ -53,7 +53,7 @@ public class AutoMend {
     private int phaseTargetRaw = 400;
     private int lowBottleCountThreshold = 40;
     private int phaseTargetHysteresisRaw = 0;
-    private int capTriggerOffsetRaw = 1;
+    private int capTriggerOffsetRaw = 3;
 
     private int actionDelayTicks = 0;
     private int swapCooldownTicks = 0;
@@ -152,6 +152,12 @@ public class AutoMend {
 
         // Continue in-flight pickup/place even if revision ack is pending.
         if (inFlightMove != null) {
+            if (client.currentScreen == null && client.player != null) {
+                client.setScreen(new InventoryScreen(client.player));
+                openedInventoryForMove = true;
+                actionDelayTicks = Math.max(actionDelayTicks, 1);
+                return;
+            }
             if (actionDelayTicks > 0) { actionDelayTicks--; return; }
             executeNext(handler, client);
             return;
@@ -161,7 +167,13 @@ public class AutoMend {
         if (swapCooldownTicks > 0) { swapCooldownTicks--; return; }
         if (actionDelayTicks > 0) { actionDelayTicks--; return; }
 
-        if (inFlightMove != null || !moveQueue.isEmpty()) {
+        if (!moveQueue.isEmpty()) {
+            if (client.currentScreen == null && client.player != null) {
+                client.setScreen(new InventoryScreen(client.player));
+                openedInventoryForMove = true;
+                actionDelayTicks = Math.max(actionDelayTicks, 1); // ~50ms open delay
+                return;
+            }
             executeNext(handler, client);
             return;
         }
@@ -171,6 +183,11 @@ public class AutoMend {
 
         queueSmartMove(handler, client);
         if (!moveQueue.isEmpty()) executeNext(handler, client);
+
+        if (openedInventoryForMove && inFlightMove == null && moveQueue.isEmpty() && client.currentScreen instanceof InventoryScreen) {
+            client.setScreen(null);
+            openedInventoryForMove = false;
+        }
     }
 
     private void runSimpleHelmetUnequipTest(ScreenHandler handler, MinecraftClient client) {
@@ -646,7 +663,7 @@ public class AutoMend {
             phaseTargetRaw = Integer.parseInt(p.getProperty("phaseTargetRaw", "400"));
             lowBottleCountThreshold = Integer.parseInt(p.getProperty("lowBottleCountThreshold", "40"));
             phaseTargetHysteresisRaw = Integer.parseInt(p.getProperty("phaseTargetHysteresisRaw", "0"));
-            capTriggerOffsetRaw = Integer.parseInt(p.getProperty("capTriggerOffsetRaw", "1"));
+            capTriggerOffsetRaw = Integer.parseInt(p.getProperty("capTriggerOffsetRaw", "3"));
         } catch (Exception ignored) {}
     }
 
