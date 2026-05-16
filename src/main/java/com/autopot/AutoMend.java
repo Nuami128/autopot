@@ -120,6 +120,12 @@ public class AutoMend {
         if (client.currentScreen != null && !openedInventoryForMove) { resetQueue(); return; }
         boolean holdingXp = isHoldingXpBottle(client);
 
+        // Hard-stop XP use while inventory move session is active to prevent right-click interference
+        // (fast place, jitter, butterfly) with slot clicks.
+        if (openedInventoryForMove || inFlightMove != null || !moveQueue.isEmpty()) {
+            client.options.useKey.setPressed(false);
+        }
+
         if (debugMode && worldTick % 20 == 0 && client.player != null) {
             client.player.sendMessage(net.minecraft.text.Text.literal("§7[AutoMend] q=" + moveQueue.size() + " pend=" + pendingConfirmTicks + " cd=" + swapCooldownTicks + " d=" + actionDelayTicks + " xp=" + holdingXp), true);
         }
@@ -139,7 +145,7 @@ public class AutoMend {
             actionDelayTicks = 0;
         }
 
-        if (isHoldingXpBottle(client) && areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw)) {
+        if (holdingXp && areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw)) {
             client.options.useKey.setPressed(false);
         }
 
@@ -222,7 +228,7 @@ public class AutoMend {
         boolean equippedSetAtTarget = areAllEquippedArmorAtOrAboveTarget(handler, phaseTargetRaw);
 
         boolean hasCappedEquippedPiece = equipped.stream().anyMatch(a -> !a.binding && a.remainingRaw >= target);
-        if (holdingXp && hasCappedEquippedPiece && moveQueue.isEmpty() && inFlightMove == null) {
+        if (holdingXp && hasCappedEquippedPiece) {
             client.options.useKey.setPressed(false);
             debug("prevent-splash active: waiting to strip capped piece at target=" + target);
         }
